@@ -1,0 +1,17 @@
+{
+  "media": "Assets\\video_continuous_1_25x.mp4",
+  "project": "output\\camera.aep",
+  "fps": 30,
+  "frameCount": 149,
+  "sourceWidth": 1476,
+  "sourceHeight": 860,
+  "sourceSpeed": 1.25,
+  "shots": [
+    {"label": "Token count", "startFrame": 0, "endFrame": 49, "target": [435, 381.5], "cameraOffset": [-560, 350, -1700]},
+    {"label": "Providers", "startFrame": 53, "endFrame": 71, "target": [692, 381.5], "cameraOffset": [0, 450, -1780]},
+    {"label": "OpenAI", "startFrame": 75, "endFrame": 148, "target": [994.5, 384.5], "cameraOffset": [560, 350, -1700]}
+  ],
+  "outputs": [
+    {"name": "Landscape", "width": 1476, "height": 860, "zoom": 1750, "file": "output\\landscape.mp4"}
+  ]
+}
