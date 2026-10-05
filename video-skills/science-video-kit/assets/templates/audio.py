@@ -9,8 +9,7 @@ BGM = None                  # path to a supplied bgm (mp3/wav), or None to compo
 
 
 def score(bus):
-    """Only when no BGM is supplied: write THIS video's music (pick a genre different from your STYLE_LOG.md).
-    Lock BPM so bars land on section starts; drive layer levels with keyframes aligned to the story."""
+    """Synthesized score, used when no BGM is supplied. Placeholder: replace with your own."""
     bpm = 90
     beat = 60 / bpm
     for k in range(int(S.TOTAL / beat)):

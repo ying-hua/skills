@@ -8,7 +8,8 @@
 | Skill | 简介 |
 | --- | --- |
 | [ae-camera-text-stops](video-skills/ae-camera-text-stops/SKILL.md) | 用 After Effects 原生摄像机制作可编辑的文字演示运镜：停住读字、快速换位，视频和光标连续播放，默认仅横屏。 |
-| [science-video-kit](video-skills/science-video-kit/SKILL.md) | 用纯 Python 程序化制作几分钟长、画面惊艳的中文科普短视频：2D/GPU 画面、合成音效与配乐（或用你的 BGM）、响度标准化压制；共享基础设施，但用风格目录和本地风格日志保证每个视频风格都不同。 |
+| [science-video-kit](video-skills/science-video-kit/SKILL.md) | 程序化制作中文讲解视频的 Python 工具箱：2D/GPU 画布与渲染、并行可续渲分段、音效与乐器合成、BGM 结构分析、数值质检、响度标准化压制。只提供工具，不含创意建议。 |
+| [science-video-aesthetics](video-skills/science-video-aesthetics/SKILL.md) | 科普短视频的审美与叙事方法：把知识放进一个有场景、角色、环境生命和声音的活世界里讲，而不是白板式图解；含开场钩子、脚本结构、风格防雷同、惊艳自检和一个完整范例。与工具无关，可搭配 science-video-kit。 |
 
 ## 使用前需提供什么
 
@@ -54,10 +55,8 @@ Copy-Item -LiteralPath ".\skills\video-skills\ae-camera-text-stops" -Destination
 
 ## science-video-kit
 
-**使用前需提供什么**：一句话主题即可。可选：BGM 文件的本地路径（不提供则由 agent 合成配乐）、
-目标时长、横屏或竖屏、目标文件大小。所有画面和声音都在本地由代码生成，skill 不附带任何素材。
-agent 会在你的视频工作区维护一份本地 `STYLE_LOG.md` 来记录已交付视频的风格，避免下次雷同；
-这份日志、渲染结果和 BGM 都留在本地，不要放进本仓库。
+**使用前需提供什么**：要做的视频内容；可选 BGM 文件的本地路径、分辨率、目标文件大小。
+所有画面和声音都在本地由代码生成，skill 不附带任何素材；渲染结果和 BGM 都留在本地，不要放进本仓库。
 
 **运行环境**：Python 3.9+，需安装 `numpy`、`scipy`、`pycairo`、`opencv-python`、`Pillow`，
 以及 PATH 中的 `ffmpeg` / `ffprobe`。GPU 画面另需 `moderngl` 和支持 OpenGL 4.3 的显卡。
@@ -70,3 +69,13 @@ pip install numpy scipy pycairo opencv-python Pillow moderngl
 python video-skills/science-video-kit/tests/test_kit.py
 ```
 
+
+## science-video-aesthetics
+
+纯文档 skill（另附一个范例项目的源码），不需要额外依赖。告诉 agent 一个主题，它会先写"世界设定"
+（舞台、概念→实物映射、角色、环境生命、声音景观），再写脚本、选风格、做主视觉关口和交付前自检。
+防雷同日志 `STYLE_LOG.md` 由 agent 维护在你的视频工作区，留在本地，不要放进本仓库。
+
+推荐和 `science-video-kit` 一起安装：前者决定拍什么、怎么讲，后者负责渲染、音频和压制。
+范例 `assets/examples/hotelling/` 依赖 Python 3、numpy、scipy、pycairo、Pillow、ffmpeg 和 Windows 字体（华文琥珀、微软雅黑、Rubik），
+其他系统需改 `gfx.py` 顶部的字体路径；运行它需要自备一个 `bgm.mp3` 放在项目上一级目录。
