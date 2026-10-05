@@ -19,7 +19,7 @@ class CoreTests(unittest.TestCase):
         import scenes
         img = scenes.render_frame(0.0, 0)
         self.assertEqual(img.shape, (1080, 1920, 3))
-        self.assertGreater(img[150:250, 600:1320].max(), 200, 'hook title must be visible on frame 0')
+        self.assertGreater(img[150:250, 600:1320].max(), 200, 'template title must be visible on frame 0')
 
     def test_text_markup_and_tags(self):
         import vk_core as v

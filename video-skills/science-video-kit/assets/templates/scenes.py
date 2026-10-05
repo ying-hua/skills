@@ -1,15 +1,15 @@
-"""TEMPLATE scenes.py - copy into a new project, then replace EVERYTHING visual with this video's own style.
+"""TEMPLATE scenes.py - copy into a new project and replace the placeholder sections.
 Contract used by vk_render: TOTAL, render_frame(t, idx). Audio cues are collected per section (see audio.py template).
 """
 import math, bisect
 import numpy as np
 from vk_core import *          # Canvas, add_text, finish, easing, effects ...
 
-# ---- this video's style decisions (fill these from the look-dev step; never copy a previous project's) ----
+# ---- project constants ----
 BG_TOP, BG_BOT = (0.05, 0.06, 0.10), (0.12, 0.10, 0.16)
 KEY = (0.40, 0.85, 1.0)
 set_tags({'k': KEY, 'h': HILITE, 'd': DIMC})
-# set_fonts(lat='C:/Windows/Fonts/bahnschrift.ttf')     # pick a type pairing that fits the topic
+# set_fonts(lat='C:/Windows/Fonts/bahnschrift.ttf')
 
 
 def cap(cv, t, t0, t1, text, y=H - 102, size=50, **kw):
@@ -20,8 +20,7 @@ def cap(cv, t, t0, t1, text, y=H - 102, size=50, **kw):
 
 
 def stamp(cv, t, t0, t1, text, x, y, size, **kw):
-    """title that slams in (scale 1.35 -> 1). a0 = alpha at the very first frame: keep it high for the hook
-    (a title that fades in from 0 makes frame 0 empty - the cover frame / first impression)."""
+    """title that scales in (1.35 -> 1). a0 = alpha at its first frame."""
     if t0 <= t <= t1:
         k = ease_out((t - t0) / 0.28)
         a0 = kw.pop('a0', 0.0)
@@ -46,7 +45,7 @@ class Section:
 
 
 class Hook(Section):
-    """first frame must already be striking: title + motion + sound at t=0"""
+    """placeholder section"""
     name, dur = 'hook', 4.0
     cues = [(0.0, 'boom', 0.9, 0.0), (0.05, 'whoosh_in', 0.6, 0.0), (1.2, 'impact', 0.8, 0.3)]
 
@@ -59,8 +58,8 @@ class Hook(Section):
         dust_motes(cv, t, n=60, col=KEY, alpha=0.4)
         cv.reset_cam()
         stamp(cv, t, 0.0, 4.0, '一个[k]反直觉[/]的问题？', W / 2, 200, 96, glow=0.2, a0=1.0)
-        cap(cv, t, 1.0, 4.0, '模板：替换成你的钩子', size=48)
-        cv.flash = 0.15 * math.exp(-t * 6)   # keep frame-0 flash small: frame 0 must stay readable
+        cap(cv, t, 1.0, 4.0, '模板：替换成你的内容', size=48)
+        cv.flash = 0.15 * math.exp(-t * 6)
 
 
 def kf_zoom(t):

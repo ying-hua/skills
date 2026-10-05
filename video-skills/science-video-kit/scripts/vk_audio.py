@@ -11,7 +11,7 @@ Music helpers   : mtof, beat grid via BPM; seq(notes, fn) to lay notes on a bus
 Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck, master
 
 Every generator returns a float64 mono array normalised to a sensible peak. Tune gain at placement time.
-Style is yours: choose instruments/scale/BPM per video; avoid reusing a previous project's palette.
+Instruments, scale and BPM are chosen per project.
 """
 import functools, subprocess
 import numpy as np
