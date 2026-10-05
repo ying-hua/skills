@@ -9,7 +9,7 @@
 | --- | --- |
 | [ae-camera-text-stops](video-skills/ae-camera-text-stops/SKILL.md) | 用 After Effects 原生摄像机制作可编辑的文字演示运镜：停住读字、快速换位，视频和光标连续播放，默认仅横屏。 |
 | [science-video-kit](video-skills/science-video-kit/SKILL.md) | 程序化制作中文讲解视频的 Python 工具箱：2D/GPU 画布与渲染、并行可续渲分段、音效与乐器合成、BGM 结构分析、数值质检、响度标准化压制。只提供工具，不含创意建议。 |
-| [science-video-aesthetics](video-skills/science-video-aesthetics/SKILL.md) | 科普短视频的审美与叙事方法：把知识放进一个有场景、角色、环境生命和声音的活世界里讲，而不是白板式图解；含开场钩子、脚本结构、风格防雷同、惊艳自检和一个完整范例。与工具无关，可搭配 science-video-kit。 |
+| [science-video-aesthetics](video-skills/science-video-aesthetics/SKILL.md) | 科普短视频的审美与叙事方法：把知识放进一个有场景、角色、环境生命和声音的活世界里讲，而不是白板式图解；含开场钩子、脚本结构、21 种已验证画风笔法与更多风格灵感、惊艳自检和一个完整范例。与工具无关，可搭配 science-video-kit。 |
 
 ## 使用前需提供什么
 
@@ -74,7 +74,7 @@ python video-skills/science-video-kit/tests/test_kit.py
 
 纯文档 skill（另附一个范例项目的源码），不需要额外依赖。告诉 agent 一个主题，它会先写"世界设定"
 （舞台、概念→实物映射、角色、环境生命、声音景观），再写脚本、选风格、做主视觉关口和交付前自检。
-防雷同日志 `STYLE_LOG.md` 由 agent 维护在你的视频工作区，留在本地，不要放进本仓库。
+风格按主题选最合适的，可以重复使用。
 
 推荐和 `science-video-kit` 一起安装：前者决定拍什么、怎么讲，后者负责渲染、音频和压制。
 范例 `assets/examples/hotelling/` 依赖 Python 3、numpy、scipy、pycairo、Pillow、ffmpeg 和 Windows 字体（华文琥珀、微软雅黑、Rubik），
