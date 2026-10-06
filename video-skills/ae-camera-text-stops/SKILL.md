@@ -1,13 +1,13 @@
 ---
 name: ae-camera-text-stops
 description: 使用 After Effects JSX 为录屏或文字视频制作可编辑的 2.5D 摄像机运镜：停住读字、快速换位、位置与目标点同步平移、光标连续滑动。适用于 AE 三机位运镜、文字聚焦、摄像机停顿、上下视角修正、录屏加减速、黑屏排查以及导出 AEP/MP4。优先脚本，不逐个手动拖关键帧。
-compatibility: "Requires Windows/PowerShell, Adobe After Effects (AE 2025 verified; built-in H.264 15 Mbps output template required, availability on other versions not guaranteed), Python 3, ffmpeg and ffprobe. Render verification additionally requires opencv-python-headless (installs numpy)."
+compatibility: "Requires Windows/PowerShell, Adobe After Effects (AE 2025 verified; built-in H.264 15 Mbps output template required, availability on other versions not guaranteed), Python 3, ffmpeg and ffprobe. Render verification and frame extraction additionally require opencv-python-headless (installs numpy)."
 ---
 
 # AE camera text stops
 
-在 Windows 上用 AE 原生双节点摄像机完成文字演示运镜。交付可编辑 `.aep`、
-播放正常的 `.mp4` 和必要素材，而不只是生成脚本。
+在 Windows 上用 AE 原生双节点摄像机完成文字演示运镜。**最终 MP4 是成品与验收依据**；
+同时保留可编辑 `.aep` 和必要素材，而不只是生成脚本。
 
 ## 使用前需提供什么
 
@@ -32,7 +32,7 @@ compatibility: "Requires Windows/PowerShell, Adobe After Effects (AE 2025 verifi
 本工作流面向 Windows/PowerShell，需要 Adobe After Effects、Python 3、`ffmpeg` 和 `ffprobe`。
 AE 2025 已验证；构建器必须找到内置 **H.264 15 Mbps** 输出模板，
 不保证其他 AE 版本提供该模板。`make_job.py` 和配置测试只用 Python 标准库；
-成片检查额外需要 `opencv-python-headless`（安装时包含 `numpy` 依赖），
+成片检查与抽帧额外需要 `opencv-python-headless`（安装时包含 `numpy` 依赖），
 缺失时在任务隔离虚拟环境安装，详见 `references\workflow.md`。
 
 不启动 AE、也不检查真实媒体的配置校验入口：
@@ -63,6 +63,9 @@ python "<skill-dir>\scripts\make_job.py" "<job.json>" --validate-only
 - 背景默认纯黑；软件渲染、原生效果、无第三方插件。
 - **只交付横屏。** 默认仅创建 Landscape 合成、渲染队列和 MP4，不再生成
   Portrait（竖屏）版本；仅当本次用户明确要求竖屏时才添加。
+- **成片直接抽帧核对。** MP4 导出后，用本地脚本检查视频并查看抽帧/联系表，
+  完成后立即交付。不再为了收尾预览打开剪映、AE 或重新导入成片；不把重开 `.aep`
+  作为完成条件。仅当用户明确要求工程检查或编辑时才打开工程。
 
 ## 执行顺序
 
@@ -94,21 +97,25 @@ python "<skill-dir>\scripts\make_job.py" "<job.json>" --validate-only
 7. **原生渲染。** 软件模式、一次一帧，优先独立 `aerender` 进程。命令必须包含
    `-mfr OFF 1`，不能少第三个参数。Windows 用 `Start-Process -Wait` 等到实际退出。
    不把退出码 0 或文件存在当作成功，检查日志、文件完整性和所有帧。
-8. **验证后交付。** 运行通用检查器：
+8. **检查最终 MP4。** 运行通用检查器和抽帧脚本：
 
    ```powershell
    python "<skill-dir>\scripts\verify_render.py" "<new-work-dir>\job.resolved.json"
+   python "<skill-dir>\scripts\extract_frames.py" "<final.mp4>" --job "<new-work-dir>\job.resolved.json" --out-dir "<task-dir>\Review"
    ```
 
    检查器用 ffprobe/ffmpeg 和本地 OpenCV 检查帧数、解码、黑帧、停顿段透视不漂移、
    指定文字位于画面中心。无纹理/严重压缩素材会导致特征匹配失败，必须报告并改用
    明确的本地人工逐帧检查，不能忽略错误后宣称通过。
+   抽帧脚本只读取成片，生成原尺寸 PNG、带帧号/时间的分页联系表和 `frames.json`。
+   **必须实际查看联系表**，检查各机位文字、边缘裁切、黑屏和换位前后效果；细节看原尺寸
+   PNG。脚本生成图片不等于视觉核对通过。每个成片使用独立的新 Review 目录。
 9. **单独核对光标连续性。** 通用检查器不能证明鼠标连续移动。将匀速素材与原片映射帧
    对比，并检查**实际拖选区间**的光标/选中边界。不要把逐字选择的 1–2 帧量化、
    原片开头等待或末尾停留误认为新增冻结。若发现中间新增长时间重复，回到源素材重做。
-10. **重新打开 `.aep`** 确认素材链接、图层开关、目标点/位置关键帧、停留段与输出一致。
-    预览可用二分之一分辨率，渲染保持 Full。停在一个可读的镜头供用户检查。
-    说明正确的新文件名、时长、速度与修改点，保留旧版，不混用废弃版本。
+10. **直接交付，不再打开编辑器。** MP4 的完整解码、自动检查、抽帧观感和光标连续性
+    核对完成后立即给出成片路径、时长、速度与修改点。AEP 在构建时保存并由原生渲染器
+    使用即可，不再追加工程重开或 GUI 预览流程。保留旧版，不混用废弃版本。
 
 ## 文件
 
@@ -116,8 +123,11 @@ python "<skill-dir>\scripts\make_job.py" "<job.json>" --validate-only
 - `scripts\make_job.py`：仅标准库；参数校验与安全 JSX 启动文件生成。
 - `scripts\build_camera.jsx`：新建 AE 工程，固定视频平面、摄像机位置+目标点动画、渲染队列。
 - `scripts\verify_render.py`：通用成片检查；需 `ffmpeg`、`ffprobe`、`opencv-python-headless`。
+- `scripts\extract_frames.py`：最终 MP4 抽帧、原尺寸 PNG、分页联系表与时间索引；
+  支持 job 机位/换位采样、均匀采样和指定帧；需 `ffprobe`、`opencv-python-headless`。
 - `references\workflow.md`：转码/渲染命令、坐标、同步方法、内存/GPU 与 ExtendScript 易错点。
 - `tests\test_jobs.py`：配置、路径保护和镜头规划回归测试。
+- `tests\test_extract_frames.py`：抽帧规划、真实解码、时间戳、分页和原片/输出保护测试。
 
 ## 错误处理与边界
 

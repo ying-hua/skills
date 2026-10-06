@@ -7,7 +7,7 @@
 
 | Skill | 简介 |
 | --- | --- |
-| [ae-camera-text-stops](video-skills/ae-camera-text-stops/SKILL.md) | 用 After Effects 原生摄像机制作可编辑的文字演示运镜：停住读字、快速换位，视频和光标连续播放，默认仅横屏。 |
+| [ae-camera-text-stops](video-skills/ae-camera-text-stops/SKILL.md) | 用 After Effects 原生摄像机制作可编辑的文字演示运镜：停住读字、快速换位，视频和光标连续播放，默认仅横屏；最终 MP4 抽帧核对后直接交付，不再打开编辑器预览。 |
 | [science-video-kit](video-skills/science-video-kit/SKILL.md) | 程序化制作中文讲解视频的 Python 工具箱：2D/GPU 画布与渲染、并行可续渲分段、音效与乐器合成、BGM 结构分析、数值质检、响度标准化压制。只提供工具，不含创意建议。 |
 | [science-video-aesthetics](video-skills/science-video-aesthetics/SKILL.md) | 科普短视频的审美与叙事方法：把知识放进一个有场景、角色、环境生命和声音的活世界里讲，而不是白板式图解；含开场钩子、脚本结构、21 种已验证画风笔法与更多风格灵感、惊艳自检和一个完整范例。与工具无关，可搭配 science-video-kit。 |
 
@@ -49,7 +49,7 @@ Copy-Item -LiteralPath ".\skills\video-skills\ae-camera-text-stops" -Destination
 并获授权执行本地 Python 和 AE 脚本。本技能的工作流面向 Windows/PowerShell，
 需要 Adobe After Effects（AE 2025 已验证）、Python 3、`ffmpeg` 和 `ffprobe`。
 构建器依赖 AE 内置 H.264 15 Mbps 输出模板，不保证其他 AE 版本提供该模板；
-成片检查额外需要 `opencv-python-headless`（安装时包含 `numpy` 依赖）。
+成片检查与抽帧额外需要 `opencv-python-headless`（安装时包含 `numpy` 依赖）。
 具体命令、工程保护和检查边界见 [SKILL.md](video-skills/ae-camera-text-stops/SKILL.md)
 及 [workflow.md](video-skills/ae-camera-text-stops/references/workflow.md)。
 

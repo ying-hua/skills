@@ -124,7 +124,7 @@ Position 分离成 X/Y/Z 可避免不必要的空间曲线。向量目标点使�
 ## 验证与依赖
 
 `make_job.py` 和配置测试只用 Python 标准库。
-`verify_render.py` 使用 OpenCV。先尝试运行；若提示缺少 cv2，再在任务隔离虚拟环境安装
+`verify_render.py` 和 `extract_frames.py` 使用 OpenCV。先尝试运行；若提示缺少 cv2，再在任务隔离虚拟环境安装
 `opencv-python-headless`，不要给用户全局 Python 环境随意加依赖。
 
 通用检查器对停顿中间的帧做特征匹配和单应性测量，目标应居中，角点漂移通常低于
@@ -141,4 +141,41 @@ Position 分离成 X/Y/Z 可避免不必要的空间曲线。向量目标点使�
   不能用放宽阈值掩盖新增的数百毫秒冻结。
 - 不修改原片已有停顿，除非用户提出删掉。
 
-完成后重开工程核对链接、摄像机位置+目标点关键帧与输出一致，再提供文件位置。
+## 最终 MP4 抽帧交付（不打开编辑器）
+
+MP4 就是最终结果。构建阶段保存 AEP，渲染后直接检查 MP4，不再为了预览打开剪映或 AE，
+也不把工程重开作为交付前置步骤。只有用户另行要求检查或修改工程时才打开工程。
+
+优先用当前成片对应的 job 自动选择首尾、各停留段内部和快速换位的帧：
+
+```powershell
+python "<skill-dir>\scripts\extract_frames.py" "C:\work\output\landscape.mp4" `
+  --job "C:\work\ae-job\job.resolved.json" --out-dir "C:\work\Review"
+```
+
+没有 job 时默认均匀抽 12 帧，也可指定数量或帧号（从 0 开始）：
+
+```powershell
+python "<skill-dir>\scripts\extract_frames.py" "C:\work\output\landscape.mp4" --count 12 --out-dir "C:\work\ReviewOverview"
+python "<skill-dir>\scripts\extract_frames.py" "C:\work\output\landscape.mp4" --frames 0 20 21 22 23 24 106 --out-dir "C:\work\ReviewDetail"
+```
+
+- `--job`、`--count`、`--frames` 三选一。job 模式确认视频是该 job 的输出，并核对尺寸、
+  帧数和抽取帧的实际解码时间戳。默认 4 帧换位包含前后边界、逐帧抽取；较长过渡最多均匀取 9 帧。
+- 输出目录必须不存在；脚本不会覆盖任何原片、工程或已有抽帧。失败会明确报错，
+  可能留下部分 PNG；只有完整抽帧成功后才生成 `frames.json`，重试时使用新目录。
+- `frame_000020.png` 是原尺寸第 20 帧，不加字、不裁切。`contact_sheet_01.jpg` 等联系表
+  保持画面比例，每页最多 12 张、三列，标注帧号、实际解码时间与 hold/move 类型。
+  `frames.json` 记录输入、帧数、时间戳、各 PNG、联系表和 job 的机位标签。
+- 用图像查看工具实际打开**每页联系表**，核对各机位文字可读、当前文字组不被裁切、
+  镜头停留稳定、换位正常、无异常黑帧；模糊的快速换位帧不能作为读字清晰度样本。
+  有疑点就查看原尺寸 PNG，或针对该区间用 `--frames` 连续抽帧，不启动编辑器。
+- 抽帧是观感检查，不能替代 `verify_render.py` 的全帧黑屏/几何检查及单独的光标连续性核对。
+  全部完成后直接交付 MP4 路径与参数，停止额外的 GUI 收尾操作。
+- 图片与检查结果只放本次任务目录，不放 skill 目录，不上传第三方。
+
+回归测试（使用本地合成测试视频，不包含用户素材）：
+
+```powershell
+python -m unittest discover -s "<skill-dir>\tests" -p "test_*.py"
+```
