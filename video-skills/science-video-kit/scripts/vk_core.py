@@ -177,9 +177,6 @@ def fbm(h, w, seed=0, octaves=6, base=4, persist=0.55):
     return out / tot
 
 
-# ---------------------------------------------------------------- backdrops
-@functools.lru_cache(1)
-
 # ---------------------------------------------------------------- generic effects
 def tracer(cv, p0, p1, u, col, width=4.0, trail=260, alpha=1.0, head=True):
     """bullet travelling p0->p1 (u in 0..1, may exceed 1 for overshoot)"""
@@ -435,15 +432,17 @@ def _font(path, size, weight):
     return f
 
 
-def _font_for(ch, size, weight, sans):
+def _font_for(ch, size, weight, sans, font=None):
+    if font:
+        return _font(font, size, weight)
     if ord(ch) < 0x2000 and ch not in '·×—…':
         return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
     return _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
 
 
 @functools.lru_cache(8192)
-def glyph(ch, size, weight, sans):
-    f = _font_for(ch, size, weight, sans)
+def glyph(ch, size, weight, sans, font=None):
+    f = _font_for(ch, size, weight, sans, font)
     ref = _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
     asc, desc = ref.getmetrics()
     adv = f.getlength(ch)
@@ -480,21 +479,22 @@ def parse(markup, color):
     return out
 
 
-def text_width(markup, size, weight=800, tracking=0.02, sans=False):
+def text_width(markup, size, weight=800, tracking=0.02, sans=False, font=None):
     chars = parse(markup, CREAM)
-    return sum(glyph(c, int(size), weight, sans)[1] + tracking * size for c, _ in chars) - tracking * size
+    return sum(glyph(c, int(size), weight, sans, font)[1] + tracking * size for c, _ in chars) - tracking * size
 
 
 def add_text(cv, markup, x, y, size=56, color=None, alpha=1.0, t=1e9, anim='rise', anchor='m', weight=800,
-             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0):
+             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0, font=None):
     """queue text (drawn in post). t = time since appearance. anim: 'rise' (per-char), 'type', None.
-    scale != 1 gives a 'stamp' slam-in when animated from ~1.35 -> 1."""
+    scale != 1 gives a 'stamp' slam-in when animated from ~1.35 -> 1.
+    font = path to one font used for every glyph of this string (handwriting, kai, mono ...)."""
     color = color or CREAM
     if alpha <= 0.004 or t < 0:
         return
     cv.texts.append(dict(markup=markup, x=x, y=y, size=size, color=color, alpha=alpha, t=t, anim=anim,
                          anchor=anchor, weight=weight, tracking=tracking, stagger=stagger, dur=dur,
-                         shadow=shadow, glow=glow, sans=sans, scale=scale))
+                         shadow=shadow, glow=glow, sans=sans, scale=scale, font=font))
 
 
 def _render_text(img, d):
@@ -502,7 +502,7 @@ def _render_text(img, d):
     chars = parse(d['markup'], d['color'])
     if not chars:
         return
-    gl = [glyph(c, size, d['weight'], d['sans']) for c, _ in chars]
+    gl = [glyph(c, size, d['weight'], d['sans'], d.get('font')) for c, _ in chars]
     adv = [g[1] + d['tracking'] * size for g in gl]
     total = sum(adv) - d['tracking'] * size
     hh = gl[0][3]

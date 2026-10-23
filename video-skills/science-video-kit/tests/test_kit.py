@@ -30,6 +30,16 @@ class CoreTests(unittest.TestCase):
         v.add_text(cv, '中文 ABC 123', 960, 540, size=60)
         self.assertGreater(v.finish(cv, 0)[500:580, 700:1220].max(), 200)
 
+    def test_font_override_and_tracer(self):
+        import vk_core as v
+        f = v._resolve(v.FONT_LAT2)
+        self.assertNotEqual(v.text_width('Var', 60, font=f), 0)
+        cv = v.Canvas()
+        v.add_text(cv, 'VAR!', 960, 540, size=60, anim=None, font=f)
+        self.assertGreater(v.finish(cv, 0)[500:580, 860:1060].max(), 200)
+        # tracer must draw on every call (it was once wrapped in an lru_cache by accident)
+        self.assertFalse(hasattr(v.tracer, 'cache_info'))
+
 
 class AudioTests(unittest.TestCase):
     def test_all_generators_finite(self):
@@ -84,6 +94,12 @@ class PipelineTests(unittest.TestCase):
             run('vk_render.py', 'render', '--module', 'tiny', '--workers', '1')
             out = run('vk_scan.py', 'spikes', 'out/chunks/c000.mp4').stdout
             self.assertIn('SUSPECT FRAMES: 0', out)
+            import vk_audio as A
+            from scipy.io import wavfile
+            tone = (0.25 * np.sin(2 * np.pi * 440 * np.arange(2 * A.SR) / A.SR) * 32767).astype(np.int16)
+            wavfile.write(os.path.join(d, 'tone.wav'), A.SR, tone)
+            lv = run('vk_scan.py', 'levels', 'tone.wav').stdout
+            self.assertIn('0:-15', lv)          # 0.25 amplitude sine -> -15 dBFS RMS
             Path(d, 'out', 'soundtrack.wav').write_bytes(b'')
             import vk_audio as A
             with contextlib.redirect_stdout(io.StringIO()):

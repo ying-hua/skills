@@ -31,7 +31,28 @@ def spikes(files):
     print('SUSPECT FRAMES:', bad)
 
 
+AUDIO_EXT = ('.wav', '.mp3', '.flac', '.m4a', '.aac', '.ogg')
+
+
+def audio_levels(f):
+    """per-second RMS / peak in dBFS of an audio file (stereo summed to mono)"""
+    p = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', f, '-ac', '1', '-ar', '8000', '-f', 'f32le', '-'],
+                       capture_output=True)
+    x = np.frombuffer(p.stdout, np.float32)
+    n = len(x) // 8000
+    x = x[:n * 8000].reshape(n, 8000)
+    rms = 20 * np.log10(np.sqrt((x.astype(np.float64) ** 2).mean(1)) + 1e-9)
+    pk = 20 * np.log10(np.abs(x).max(1) + 1e-9)
+    print('per-second RMS dBFS (peak):')
+    print(' '.join(f'{i}:{r:.0f}({q:.0f})' for i, (r, q) in enumerate(zip(rms, pk))))
+    quiet = [i for i in range(n) if rms[i] < rms.max() - 30]
+    print(f'loudest {rms.max():.1f} dB @ {int(rms.argmax())}s; seconds >30 dB below loudest: {quiet}')
+
+
 def levels(f):
+    """video: per-second mean brightness; audio files: per-second RMS/peak dBFS"""
+    if f.lower().endswith(AUDIO_EXT):
+        return audio_levels(f)
     a = frames(f, 32, 18)
     r = subprocess.run(['ffprobe', '-v', 'error', '-select_streams', 'v', '-show_entries', 'stream=r_frame_rate',
                         '-of', 'csv=p=0', f], capture_output=True, text=True).stdout.strip().split('/')
