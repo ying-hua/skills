@@ -14,6 +14,7 @@ Every generator returns a float64 mono array normalised to a sensible peak. Tune
 Instruments, scale and BPM are chosen per project.
 """
 import functools, subprocess
+import math
 import numpy as np
 from scipy.signal import butter, sosfilt, fftconvolve, lfilter
 
@@ -385,7 +386,8 @@ def fm_bell(f, d=3.0, ratio=3.5, index=3.0, vel=1.0):
 
 
 def pluck(f, d=1.5, decay=0.996, bright=0.5, vel=1.0):
-    """Karplus-Strong"""
+    """Karplus-Strong. The delay line is a whole number of samples, so pitch is off by up to ~8 cents
+    (e.g. 440 Hz -> 438.4 Hz). Fine for texture; for chords/intervals that must be in tune use pluck_exact."""
     L = max(2, int(SR / f))
     burst = filt(noise(L / SR + 0.001), 'low', 2000 + 8000 * bright)[:L]
     n = int(d * SR)
@@ -448,6 +450,36 @@ def epiano(f, d=2.0, vel=1.0):
     t = tt(d)
     I = 1.6 * np.exp(-t * 3)
     return np.sin(2 * np.pi * f * t + I * np.sin(2 * np.pi * f * t)) * env(d, 0.003, 1.8) * vel * 0.5
+
+
+def additive(f, d, amps, decays, seed=0):
+    """exactly tuned harmonic tone: partial n has amplitude amps[n-1] and decays as exp(-t*decays[n-1])"""
+    t = tt(d)
+    x = np.zeros(len(t))
+    r = np.random.default_rng(seed)
+    for n, (a, k) in enumerate(zip(amps, decays), start=1):
+        if a > 0 and n * f < SR * 0.45:
+            x += a * np.sin(2 * np.pi * n * f * t + r.random() * 6.283) * np.exp(-t * k)
+    return x
+
+
+def pluck_exact(f, d=1.5, vel=1.0, pos=0.2, k0=1.1, k1=0.33, n=24):
+    """plucked string with exact pitch (additive): spectrum of a string plucked at `pos`, higher partials die faster.
+    Use for anything where intervals/beats matter (tuning demos, chords); pluck() drifts by several cents."""
+    amps = [abs(math.sin(m * math.pi * pos)) / m ** 1.55 for m in range(1, n + 1)]
+    x = additive(f, d, amps, [k0 + k1 * m ** 1.15 for m in range(1, n + 1)], int(f * 7))
+    nr = min(len(x), int(0.1 * SR))
+    x[:int(0.0015 * SR)] *= np.linspace(0, 1, int(0.0015 * SR))
+    x[-nr:] *= np.linspace(1, 0, nr)
+    return x * vel * 0.9
+
+
+def organ(f, d=2.0, vel=1.0, a=0.07, r=0.3):
+    """sustained, exactly tuned harmonic tone: two notes a hair off a simple ratio beat audibly against each other"""
+    t = tt(d)
+    amps = (1, 0.75, 0.55, 0.4, 0.32, 0.22, 0.16, 0.12, 0.08, 0.06)
+    x = sum(g * np.sin(2 * np.pi * n * f * t + n) for n, g in enumerate(amps, 1) if n * f < SR * 0.45)
+    return x * adsr(d, a, 0.2, 0.85, r) * vel * 0.32
 
 
 # ---------------------------------------------------------------- mixing
