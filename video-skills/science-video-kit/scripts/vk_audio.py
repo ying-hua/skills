@@ -6,7 +6,8 @@ SFX (~35)       : gunshot, gunshot_small, boom, impact, thud, stomp, ricochet, w
                   rewind, pop, tick, tick_run, chime (cha-ching), bell_hit, hammer, click, spin, lock, deny, braam,
                   stamp, mystery, hit_soft, cloth, heartbeat, whistle_up, split, merge, computer, wind, flow_bed,
                   sparkle, glitch, geiger
-Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano
+Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano,
+                  square / tri (band-limited chiptune), choir (formant vowel pad)
 Music helpers   : mtof, beat grid via BPM; seq(notes, fn) to lay notes on a bus
 Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck, master
 
@@ -480,6 +481,43 @@ def organ(f, d=2.0, vel=1.0, a=0.07, r=0.3):
     amps = (1, 0.75, 0.55, 0.4, 0.32, 0.22, 0.16, 0.12, 0.08, 0.06)
     x = sum(g * np.sin(2 * np.pi * n * f * t + n) for n, g in enumerate(amps, 1) if n * f < SR * 0.45)
     return x * adsr(d, a, 0.2, 0.85, r) * vel * 0.32
+
+
+def square(f, d, vel=1.0, a=0.003, dcy=0.08, s=0.5, r=0.04, top=7000.0):
+    """band-limited square (odd harmonics up to `top` Hz): 8-bit / chiptune leads and arps without aliasing"""
+    t = tt(d)
+    x = np.zeros(len(t))
+    k = 1
+    while k * f < min(top, SR * 0.45) and k < 60:
+        x += np.sin(2 * np.pi * k * f * t) / k
+        k += 2
+    return x * adsr(d, a, dcy, s, r) * vel * 0.5
+
+
+def tri(f, d, vel=1.0):
+    """band-limited triangle: soft chiptune bass"""
+    t = tt(d)
+    x = sum(((-1) ** ((k - 1) // 2)) * np.sin(2 * np.pi * k * f * t) / k ** 2 for k in (1, 3, 5, 7, 9) if k * f < SR * 0.45)
+    return x * adsr(d, 0.005, 0.1, 0.8, 0.05) * vel * 0.8
+
+
+def choir(notes, d, vel=1.0, a=1.5, formants=((750, 1.0, 140), (1200, 0.55, 160), (2600, 0.25, 260))):
+    """breathy vowel 'ah' pad: harmonics of each midi note weighted by formant bumps (centre Hz, gain, width) + vibrato.
+    Change formants for other vowels, e.g. 'oo' ((300, 1, 90), (870, 0.5, 120), (2240, 0.15, 200))."""
+    t = tt(d)
+    x = np.zeros(len(t))
+    for j, m in enumerate(notes):
+        f0 = mtof(m)
+        vib = 1 + 0.004 * np.sin(2 * np.pi * (5.0 + 0.3 * j) * t + j)
+        ph = 2 * np.pi * f0 * np.cumsum(vib) / SR
+        for h in range(1, 40):
+            fh = f0 * h
+            if fh > 9000:
+                break
+            g = sum(A * np.exp(-((fh - Fm) / bw) ** 2) for Fm, A, bw in formants)
+            x += g * np.sin(h * ph + h * j)
+    br = filt(noise(d), 'band', [500, 3000]) * 0.02
+    return (x / max(1, len(notes)) * 0.5 + br) * adsr(d, min(a, d / 2), 0.3, 0.9, min(2.0, d / 2)) * vel
 
 
 # ---------------------------------------------------------------- mixing

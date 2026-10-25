@@ -4,7 +4,8 @@
   helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise
   effects     tracer (glowing streak), muzzle (star flash + smoke), impact (dust burst + shock ring), dust_motes,
               reticle, dashed_line, arrow_head, rrect, panel
-  text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing
+  text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
+              cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
   post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder, chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
@@ -103,6 +104,7 @@ class Canvas:
         self.grain = 1.0
         self.vignette = 1.0
         self.ca = 0.0             # chromatic aberration strength
+        self.text_boxes = []      # [(text dict, ink box (x0, y0, x1, y1) px)] filled by finish()
 
     def both(self):
         return (self.c, self.g)
@@ -121,11 +123,13 @@ class Canvas:
             ctx.restore()
 
 
-_KEEP = []
+_KEEP = []          # per-frame temporaries: clear with _KEEP.clear() at the end of render_frame
+_PERSIST = []       # long-lived cached textures (persist=True): never cleared
 
 
-def to_surface(img):
-    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface (kept alive by attribute)"""
+def to_surface(img, persist=False):
+    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP (per-frame, clear it
+    after finish) or, with persist=True, in _PERSIST (for textures cached at import time and reused every frame)."""
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     a[..., 0] = np.clip(img[..., 2] * 255, 0, 255)
@@ -133,11 +137,11 @@ def to_surface(img):
     a[..., 2] = np.clip(img[..., 0] * 255, 0, 255)
     a[..., 3] = 255
     s = cairo.ImageSurface.create_for_data(memoryview(a), cairo.FORMAT_RGB24, w, h)
-    _KEEP.append(a)
+    (_PERSIST if persist else _KEEP).append(a)
     return s
 
 
-def to_surface_rgba(img, alpha):
+def to_surface_rgba(img, alpha, persist=False):
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     al = np.clip(alpha, 0, 1)
@@ -146,7 +150,7 @@ def to_surface_rgba(img, alpha):
     a[..., 2] = np.clip(img[..., 0] * al * 255, 0, 255)
     a[..., 3] = np.clip(al * 255, 0, 255)
     s = cairo.ImageSurface.create_for_data(memoryview(a), cairo.FORMAT_ARGB32, w, h)
-    _KEEP.append(a)
+    (_PERSIST if persist else _KEEP).append(a)
     return s
 
 
@@ -563,6 +567,23 @@ def _render_text(img, d):
         region += gb * d['glow'] * A
     m = (sa * A)[..., None]
     region[:] = region * (1 - m) + scc * m
+    ys, xs = np.nonzero(m[..., 0] > 0.02)
+    if len(ys):
+        return (fx0 + int(xs.min()), fy0 + int(ys.min()), fx0 + int(xs.max()) + 1, fy0 + int(ys.max()) + 1)
+    return None
+
+
+def text_in_zones(cv, zones):
+    """Call after finish(cv). zones = [(x0, y0, x1, y1)] as fractions of the frame (e.g. a cover's top-left corner
+    (0, 0, 0.5, 0.25) that a platform badge will cover). Returns [(markup, box_px, zone)] for every text whose ink
+    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted)."""
+    hits = []
+    for d, b in cv.text_boxes:
+        for z in zones:
+            zx0, zy0, zx1, zy1 = z[0] * W, z[1] * H, z[2] * W, z[3] * H
+            if b[0] < zx1 and b[2] > zx0 and b[1] < zy1 and b[3] > zy0:
+                hits.append((d['markup'], b, z))
+    return hits
 
 
 # ---------------------------------------------------------------- post
@@ -590,8 +611,11 @@ def finish(cv, frame_idx=0):
                         (W // 2, H // 2), interpolation=cv2.INTER_LINEAR)
         b = b + b2 * 0.7
         img += cv2.resize(b, (W, H), interpolation=cv2.INTER_LINEAR)
+    cv.text_boxes = []
     for d in cv.texts:
-        _render_text(img, d)
+        b = _render_text(img, d)
+        if b:
+            cv.text_boxes.append((d, b))
     if cv.flash > 0:
         img += np.array([1.0, 0.85, 0.6], np.float32) * cv.flash
     # tone: soft shoulder

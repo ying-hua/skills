@@ -41,6 +41,30 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(hasattr(v.tracer, 'cache_info'))
 
 
+    def test_text_boxes_and_zones(self):
+        import vk_core as v
+        cv = v.Canvas()
+        v.add_text(cv, '封面标题', v.W * 0.7, v.H * 0.5, size=80, anim=None, glow=0.5)
+        v.finish(cv, 0)
+        self.assertEqual(len(cv.text_boxes), 1)
+        x0, y0, x1, y1 = cv.text_boxes[0][1]
+        self.assertTrue(x0 > v.W * 0.5 and y0 > v.H * 0.4 and y1 < v.H * 0.6)
+        corners = [(0, 0, 0.5, 0.25), (0, 0.87, 0.5, 1)]
+        self.assertEqual(v.text_in_zones(cv, corners), [])
+        cv2_ = v.Canvas()
+        v.add_text(cv2_, '左上角', 200, 100, size=60, anim=None)
+        v.finish(cv2_, 0)
+        self.assertEqual(len(v.text_in_zones(cv2_, corners)), 1)
+
+    def test_persist_surface_survives_keep_clear(self):
+        import vk_core as v
+        s = v.to_surface(np.full((8, 8, 3), 0.5, np.float32), persist=True)
+        v._KEEP.clear()
+        cv = v.Canvas()
+        v.paint_img(cv.c, s, v.W // 2, v.H // 2)
+        self.assertAlmostEqual(v.finish(cv, 0)[v.H // 2 + 4, v.W // 2 + 4].mean() / 255, 0.5, delta=0.12)
+
+
 class AudioTests(unittest.TestCase):
     def test_all_generators_finite(self):
         import inspect
@@ -55,6 +79,16 @@ class AudioTests(unittest.TestCase):
                 continue
             out = fn(*[args[r] for r in req])
             self.assertTrue(np.all(np.isfinite(out)), name)
+
+    def test_chiptune_and_choir(self):
+        import vk_audio as A
+        x = A.square(440.0, 0.3)
+        spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+        fr = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertLess(spec[fr > 8000].max(), spec.max() * 1e-3, 'square must be band-limited')
+        self.assertTrue(np.all(np.isfinite(A.tri(110.0, 0.3))))
+        c = A.choir([60, 64, 67], 1.0)
+        self.assertTrue(np.all(np.isfinite(c)) and np.abs(c).max() > 0.01)
 
     def test_bus_and_master(self):
         import vk_audio as A

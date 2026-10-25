@@ -27,6 +27,7 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 **1. 场景代码**（`scenes.py`）
 - 契约：`TOTAL`（秒）和 `render_frame(t, idx)`，返回 RGB uint8 帧。
 - 模板提供 `Section` 分段、`cap` 字幕、`stamp` 缩放入场标题、cue 列表、`render_frame`。
+- `Section.xin`：与上一段整帧交叉淡化的秒数（上一段会以 `t > dur` 继续绘制）；`Section.post(img, t)`：对成帧做整帧效果（扫描线、画面压扁关机等）。
 - 有 BGM 时可先运行 `python vk_bgm.py <bgm>`，得到速度、逐秒电平、HITS / QUIET / SILENCES 时间点。
 
 **2. 联系表检查**
@@ -48,14 +49,18 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 - `python vk_scan.py sheet <成片> 5,40,90 [out.png]`：从成片指定时刻抽帧拼图。
 - 交付后可删除分段和 `video_noaudio.mp4`。
 
+**6. 封面**
+- 封面是单独的脚本：先设 `VK_W/VK_H` 再导入场景模块，按比例摆放元素（每种比例一个进程）。
+- 有平台角标、点赞数遮挡的角落：`finish(cv)` 后 `assert not text_in_zones(cv, [(0, 0, .5, .25), (0, .87, .5, 1)])`。
+
 ## 脚本一览（scripts/）
 
 | 文件 | 内容 |
 |---|---|
-| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`to_surface`/`paint_img` 贴 numpy 纹理。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体等），`set_fonts`，`set_tags`。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩、色差、暗角、颗粒、淡出） |
+| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`to_surface`/`paint_img` 贴 numpy 纹理（缓存纹理用 `persist=True`）。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体等），`set_fonts`，`set_tags`；`finish` 后 `cv.text_boxes` 记录每条文字的字墨外框，`text_in_zones(cv, zones)` 检查封面避让区。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩、色差、暗角、颗粒、淡出） |
 | `vk_gl.py` | 无头 moderngl 框架：抖动多采样累积 + 快门运动模糊，带 NaN/Inf 保护的 resolve，mip 泛光，ACES，调色，分条渲染防 TDR，`look_at`，`project`（3D 坐标转屏幕坐标，用于贴标签）。着色器约定见文件头注释 |
 | `vk_render.py` | `sheet` 联系表 · `render` 并行可续渲分段（`--from/--to` 只重渲某个时间段）· `concat` |
-| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`、`duck`、`master` |
+| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`、`duck`、`master` |
 | `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES |
 | `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、成片抽帧 `sheet` |
 | `vk_finalize.py` | loudnorm 响度标准化 + 两遍 x264，压到 `--mb` 指定的大小 |
