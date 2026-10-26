@@ -484,17 +484,24 @@ def _font_for(ch, size, weight, sans, font=None):
 
 @functools.lru_cache(64)
 def math_img(tex, size, color=(1.0, 1.0, 1.0), fontset='stix'):
-    """render a LaTeX-subset formula (matplotlib mathtext, no TeX install needed) -> (rgb float (h,w,3), alpha (h,w)).
-    size = approx. cap height scale in px like add_text; tex without the surrounding $...$."""
+    """render a LaTeX-subset formula (matplotlib mathtext, no TeX install needed) on a transparent background
+    -> (rgb float (h,w,3), alpha (h,w)). size = font size in px (same scale as add_text); tex without the $...$."""
     import io as _io
-    from matplotlib import mathtext
-    from matplotlib.font_manager import FontProperties
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    fig = Figure(figsize=(1, 1), dpi=100)
+    FigureCanvasAgg(fig)
+    fig.text(0, 0, f'${tex}$', fontsize=size * 0.72, color=tuple(color), math_fontfamily=fontset)
     buf = _io.BytesIO()
-    mathtext.math_to_image(f'${tex}$', buf, prop=FontProperties(size=size * 0.72, math_fontfamily=fontset), dpi=100,
-                           format='png', color=tuple(color))
+    fig.savefig(buf, dpi=100, format='png', transparent=True, bbox_inches='tight', pad_inches=0.06)
     buf.seek(0)
     im = np.asarray(Image.open(buf).convert('RGBA'), np.float32) / 255.0
-    return np.ascontiguousarray(im[..., :3]), np.ascontiguousarray(im[..., 3])
+    a = np.ascontiguousarray(im[..., 3])
+    rgb = np.empty(im.shape[:2] + (3,), np.float32)
+    rgb[:] = np.array(color, np.float32)          # flat ink colour; coverage lives in alpha
+    return rgb, a
 
 
 def add_math(cv, tex, x, y, size=48, color=None, alpha=1.0, anchor='m', glow=0.0, fontset='stix'):

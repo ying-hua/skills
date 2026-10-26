@@ -64,6 +64,9 @@ class CoreTests(unittest.TestCase):
             self.skipTest('no matplotlib')
         self.assertGreater(a.shape[1], a.shape[0])
         self.assertGreater(a.max(), 0.9)
+        self.assertEqual(a[0, 0], 0.0)                 # transparent background, not a white box
+        self.assertLess(a.mean(), 0.4)
+        self.assertGreater(a.shape[0], 48 * 1.5)        # stacked fraction at 48 px is taller than one text line
         cv = v.Canvas()
         v.add_math(cv, r"\Delta t' = \frac{\Delta t}{\sqrt{1 - v^2/c^2}}", 960, 540, 60)
         self.assertGreater(v.finish(cv, 0)[480:600, 760:1160].max(), 200)
