@@ -436,8 +436,19 @@ def _font(path, size, weight):
     return f
 
 
+@functools.lru_cache(4096)
+def has_glyph(path, ch):
+    """does the font at `path` contain a real glyph for ch? (a missing one renders the .notdef 'tofu' box)"""
+    if ch.isspace():
+        return True
+    f = _font(path, 32, 400)
+    probe = f.getmask(ch)
+    tofu = f.getmask('􏿽')
+    return not (probe.size == tofu.size and bytes(probe) == bytes(tofu))
+
+
 def _font_for(ch, size, weight, sans, font=None):
-    if font:
+    if font and has_glyph(font, ch):
         return _font(font, size, weight)
     if ord(ch) < 0x2000 and ch not in '·×—…':
         return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)

@@ -41,6 +41,17 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(hasattr(v.tracer, 'cache_info'))
 
 
+    def test_font_override_falls_back_for_missing_glyphs(self):
+        import vk_core as v
+        lat = v._resolve(v.FONT_LAT2)
+        self.assertTrue(v.has_glyph(lat, 'A'))
+        self.assertFalse(v.has_glyph(lat, '中'))           # latin font: no CJK glyph -> default CJK font is used
+        self.assertIsNot(v._font_for('中', 40, 600, True, lat), v._font(lat, 40, 600))
+        cv = v.Canvas()
+        v.add_text(cv, 'GPS 卫星', 960, 540, size=60, anim=None, font=lat)
+        v.finish(cv, 0)
+        self.assertEqual(len(cv.text_boxes), 1)
+
     def test_text_boxes_and_zones(self):
         import vk_core as v
         cv = v.Canvas()
@@ -140,6 +151,21 @@ class PipelineTests(unittest.TestCase):
                 A.master(A.Bus(0.5).x + 1e-3 * np.random.randn(int(1.5 * A.SR), 2), 0.5, os.path.join(d, 'out', 'soundtrack.wav'))
             run('vk_finalize.py', '--out', 'out/t.mp4', '--mb', '0.5')
             self.assertTrue(Path(d, 'out', 't.mp4').exists())
+
+
+class LevelTests(unittest.TestCase):
+    def test_level_narrows_dynamic_range(self):
+        import vk_audio as A
+        n = 4 * A.SR
+        x = np.random.default_rng(0).standard_normal((2 * n, 2)) * 0.01
+        x[n:] *= 10                                   # 20 dB jump
+        y = A.level(x, win=1.0, ratio=0.5)
+        db = lambda a: 10 * np.log10((a ** 2).mean())
+        gap_in = db(x[n + A.SR:]) - db(x[:n - A.SR])
+        gap_out = db(y[n + A.SR:]) - db(y[:n - A.SR])
+        self.assertAlmostEqual(gap_in, 20, delta=0.5)
+        self.assertLess(gap_out, 12)
+        self.assertTrue(np.allclose(A.movavg(np.ones(1000), 101), 1.0))
 
 
 class GLTests(unittest.TestCase):

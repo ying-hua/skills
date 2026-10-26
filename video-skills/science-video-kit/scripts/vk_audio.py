@@ -9,7 +9,8 @@ SFX (~35)       : gunshot, gunshot_small, boom, impact, thud, stomp, ricochet, w
 Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano,
                   square / tri (band-limited chiptune), choir (formant vowel pad)
 Music helpers   : mtof, beat grid via BPM; seq(notes, fn) to lay notes on a bus
-Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck, master
+Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck,
+                  level (slow leveler), movavg (O(n) moving average), master
 
 Every generator returns a float64 mono array normalised to a sensible peak. Tune gain at placement time.
 Instruments, scale and BPM are chosen per project.
@@ -577,6 +578,28 @@ def load_bgm(path, total_sec):
     n = min(len(out), len(b))
     out[:n] = b[:n]
     return out
+
+
+def movavg(v, w):
+    """centred moving average of a 1-D array over w samples, O(n) via cumsum (np.convolve with a multi-second window
+    at 48 kHz takes minutes)"""
+    v = np.asarray(v, np.float64)
+    c = np.concatenate([[0.0], np.cumsum(v)])
+    i = np.arange(len(v))
+    lo, hi = np.clip(i - w // 2, 0, len(v)), np.clip(i + w // 2 + 1, 0, len(v))
+    return (c[hi] - c[lo]) / (hi - lo)
+
+
+def level(x, win=2.5, ratio=0.55, gmin=0.6, gmax=3.5):
+    """slow leveler for a whole mix (mono or stereo): gain = (mean RMS / local RMS) ** ratio over a `win`-second
+    window, clamped to [gmin, gmax] and smoothed over 0.5 s. ratio 0.5 roughly halves the dB gap between quiet and
+    loud passages so quiet stretches stay audible on phone speakers after loudness normalisation."""
+    st = x.ndim == 2
+    m = (x ** 2).mean(1) if st else x ** 2
+    rms = np.sqrt(movavg(m, int(win * SR)) + 1e-12)
+    ref = np.sqrt(m.mean())
+    g = movavg(np.clip((ref / rms) ** ratio, gmin, gmax), SR // 2)
+    return x * (g[:, None] if st else g)
 
 
 def duck(music, sfx, amount=1.2, speed_hz=3.0):
