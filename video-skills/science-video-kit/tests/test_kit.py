@@ -47,10 +47,27 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(v.has_glyph(lat, 'A'))
         self.assertFalse(v.has_glyph(lat, '中'))           # latin font: no CJK glyph -> default CJK font is used
         self.assertIsNot(v._font_for('中', 40, 600, True, lat), v._font(lat, 40, 600))
+        # symbols missing from both defaults still find a font (or are reported by missing_glyphs)
+        self.assertNotEqual(v._font_choice('中', 48, 400, False, lat)[0], lat)   # override lacks it -> next font
+        self.assertEqual(v.missing_glyphs('Δt = √(1 − v²/c²) ≈ μν', font=lat), [])
+        self.assertEqual(v.missing_glyphs('􏿽'), ['􏿽'])
         cv = v.Canvas()
         v.add_text(cv, 'GPS 卫星', 960, 540, size=60, anim=None, font=lat)
         v.finish(cv, 0)
         self.assertEqual(len(cv.text_boxes), 1)
+
+    def test_add_math_formula(self):
+        import vk_core as v
+        try:
+            rgb, a = v.math_img(r"G_{\mu\nu} = \frac{8\pi G}{c^4} T_{\mu\nu}", 48)
+        except ImportError:
+            self.skipTest('no matplotlib')
+        self.assertGreater(a.shape[1], a.shape[0])
+        self.assertGreater(a.max(), 0.9)
+        cv = v.Canvas()
+        v.add_math(cv, r"\Delta t' = \frac{\Delta t}{\sqrt{1 - v^2/c^2}}", 960, 540, 60)
+        self.assertGreater(v.finish(cv, 0)[480:600, 760:1160].max(), 200)
+        v._KEEP.clear()
 
     def test_text_boxes_and_zones(self):
         import vk_core as v

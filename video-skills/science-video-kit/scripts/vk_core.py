@@ -447,12 +447,73 @@ def has_glyph(path, ch):
     return not (probe.size == tofu.size and bytes(probe) == bytes(tofu))
 
 
+SYMBOL_FALLBACK = ['C:/Windows/Fonts/seguisym.ttf', 'C:/Windows/Fonts/cambria.ttc', 'C:/Windows/Fonts/segoeui.ttf',
+                   'C:/Windows/Fonts/arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                   '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
+
+
+@functools.lru_cache(8192)
+def _font_choice(ch, size, weight, sans, font=None):
+    """(path, size, weight) of the first font in the chain that really has ch: font override -> latin/CJK default
+    (script order) -> the other default -> SYMBOL_FALLBACK. None if nothing has it."""
+    lat = (FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
+    cjk = (FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+    order = [lat, cjk] if (ord(ch) < 0x2000 and ch not in '·×—…') else [cjk, lat]
+    if font:
+        order.insert(0, (font, size, weight))
+    order += [(p, size, 400) for p in SYMBOL_FALLBACK if os.path.exists(p)]
+    for c in order:
+        try:
+            if has_glyph(c[0], ch):
+                return c
+        except OSError:
+            continue
+    return None
+
+
 def _font_for(ch, size, weight, sans, font=None):
-    if font and has_glyph(font, ch):
-        return _font(font, size, weight)
-    if ord(ch) < 0x2000 and ch not in '·×—…':
-        return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
-    return _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+    c = _font_choice(ch, size, weight, sans, font)
+    if c is None:          # nothing has it: keep the old behaviour (tofu from the primary font)
+        if font:
+            return _font(font, size, weight)
+        if ord(ch) < 0x2000 and ch not in '·×—…':
+            return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
+        return _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+    return _font(*c)
+
+
+@functools.lru_cache(64)
+def math_img(tex, size, color=(1.0, 1.0, 1.0), fontset='stix'):
+    """render a LaTeX-subset formula (matplotlib mathtext, no TeX install needed) -> (rgb float (h,w,3), alpha (h,w)).
+    size = approx. cap height scale in px like add_text; tex without the surrounding $...$."""
+    import io as _io
+    from matplotlib import mathtext
+    from matplotlib.font_manager import FontProperties
+    buf = _io.BytesIO()
+    mathtext.math_to_image(f'${tex}$', buf, prop=FontProperties(size=size * 0.72, math_fontfamily=fontset), dpi=100,
+                           format='png', color=tuple(color))
+    buf.seek(0)
+    im = np.asarray(Image.open(buf).convert('RGBA'), np.float32) / 255.0
+    return np.ascontiguousarray(im[..., :3]), np.ascontiguousarray(im[..., 3])
+
+
+def add_math(cv, tex, x, y, size=48, color=None, alpha=1.0, anchor='m', glow=0.0, fontset='stix'):
+    """paint a formula with real sub/superscripts, fractions and roots onto the base layer, centred at (x, y)
+    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order."""
+    if alpha <= 0.004:
+        return
+    rgb, a = math_img(tex, int(size), tuple(color or CREAM), fontset)
+    h, w = a.shape
+    x0 = x - (w / 2 if anchor == 'm' else (w if anchor == 'r' else 0))
+    paint_img(cv.c, to_surface_rgba(rgb, a), x0, y - h / 2, alpha=alpha)
+    if glow > 0:
+        paint_img(cv.g, to_surface_rgba(rgb * glow, a), x0, y - h / 2, alpha=alpha)
+
+
+def missing_glyphs(markup, weight=800, sans=False, font=None):
+    """characters of a markup string that no font in the fallback chain can draw (they would show as tofu boxes)"""
+    return sorted({ch for ch, _ in parse(markup, CREAM) if not ch.isspace()
+                   and _font_choice(ch, 48, weight, sans, font) is None})
 
 
 @functools.lru_cache(8192)
