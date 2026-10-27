@@ -121,6 +121,18 @@ class AudioTests(unittest.TestCase):
         c = A.choir([60, 64, 67], 1.0)
         self.assertTrue(np.all(np.isfinite(c)) and np.abs(c).max() > 0.01)
 
+    def test_group_fades_both_layers_and_text(self):
+        import vk_core as vc
+        cv = vc.Canvas()
+        def scene(cv):
+            cv.c.set_source_rgb(1, 1, 1)
+            cv.c.paint()
+            vc.add_text(cv, 'AB', vc.W / 2, vc.H / 2, size=40)
+        vc.group(cv, scene, 0.5)
+        v = vc.surf_np(cv.base, vc.W, vc.H)[5, 5, 0]
+        self.assertAlmostEqual(float(v), 0.5, delta=0.02)
+        self.assertAlmostEqual(cv.texts[0]['alpha'], 0.5)
+
     def test_bus_and_master(self):
         import vk_audio as A
         bus = A.Bus(2.0)

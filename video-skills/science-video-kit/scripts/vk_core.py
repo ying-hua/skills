@@ -6,6 +6,7 @@
               reticle, dashed_line, arrow_head, rrect, panel
   text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
               cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
+  compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
   post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder, chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
@@ -663,6 +664,27 @@ def text_in_zones(cv, zones):
             if b[0] < zx1 and b[2] > zx0 and b[1] < zy1 and b[3] > zy0:
                 hits.append((d['markup'], b, z))
     return hits
+
+
+def group(cv, fn, a):
+    """draw fn(cv) on both layers (base + glow) as one group and composite it with alpha a; texts queued by fn get
+    their alpha scaled too. Use for whole-scene cross-fades / fading a sub-scene in over another without the
+    double-exposure look of fading each element separately."""
+    if a <= 0.003:
+        return
+    if a >= 0.997:
+        fn(cv)
+        return
+    n0 = len(cv.texts)
+    cv.c.push_group()
+    cv.g.push_group()
+    fn(cv)
+    cv.g.pop_group_to_source()
+    cv.g.paint_with_alpha(a)
+    cv.c.pop_group_to_source()
+    cv.c.paint_with_alpha(a)
+    for d in cv.texts[n0:]:
+        d['alpha'] *= a
 
 
 # ---------------------------------------------------------------- post
