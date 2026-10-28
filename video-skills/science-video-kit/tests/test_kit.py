@@ -200,6 +200,31 @@ class LevelTests(unittest.TestCase):
         self.assertTrue(np.allclose(A.movavg(np.ones(1000), 101), 1.0))
 
 
+class SpectralTests(unittest.TestCase):
+    def test_colour_vision_maths(self):
+        import vk_spectral as V
+        white = np.ones_like(V.LAM)
+        xyz = V.spectrum_xyz(white)
+        self.assertAlmostEqual(xyz[1], 1.0, places=6)
+        rgb = V.xyz_to_linear(xyz)
+        self.assertLess(rgb.max() - rgb.min(), 0.25)                 # daylight white is near-neutral
+        self.assertEqual(int(np.argmax(V.opsin(560))), int(np.argmin(abs(V.LAM - 560))))
+        q = V.catches(white * 0.5, [V.opsin(420), V.opsin(560)])
+        self.assertTrue(np.allclose(q, 0.5))                         # von Kries: grey -> equal catches
+        red = V.xyz_to_linear(V.spectrum_xyz(0.04 + 0.8 * V.sig(600, 9)))
+        green = V.xyz_to_linear(V.spectrum_xyz(0.04 + 0.4 * V.g(540, 25)))
+        self.assertGreater(red[0], red[1])
+        self.assertGreater(green[1], green[0])
+        d_r, d_g = V.simulate_dichromat(red), V.simulate_dichromat(green)
+        self.assertAlmostEqual(d_r[0], d_r[1], places=6)             # deuteranope: R and G collapse
+        self.assertEqual(V.wavelength_rgb(300), (0.0, 0.0, 0.0))
+        r, gg, b = V.wavelength_rgb(580)
+        self.assertGreater(r, 0.9)
+        self.assertGreater(gg, 0.9)
+        self.assertLess(b, 0.05)
+        self.assertTrue(np.allclose(V.srgb_to_linear(V.linear_to_srgb([0.2, 0.5, 0.9])), [0.2, 0.5, 0.9]))
+
+
 class GLTests(unittest.TestCase):
     def test_gl_render_and_nan_guard(self):
         try:

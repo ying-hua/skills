@@ -63,6 +63,7 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 | `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
 | `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES |
 | `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、成片抽帧 `sheet` |
+| `vk_spectral.py` | 光与色觉数学（300–730 nm，含紫外）：`wavelength_rgb` 画彩虹/光谱用的波长→sRGB，CIE 1931 配色函数解析拟合 `cmf`、日光 `daylight`、反射光谱→XYZ→sRGB（`spectrum_xyz`/`xyz_to_linear`/`linear_to_srgb`），Govardovskii 视蛋白模板 `opsin(λmax)` 和 `catches`（任意动物感光细胞的量子捕获，白点归一），`simulate_dichromat`（红/绿色盲模拟），`g`/`sig` 搭反射光谱 |
 | `vk_finalize.py` | loudnorm 响度标准化 + 两遍 x264，压到 `--mb` 指定的大小 |
 
 模板 `assets/templates/`：`scenes.py`（分段、字幕、标题、cue、`render_frame`）、`audio.py`（外部 BGM 或自写配乐、压低音乐、母带处理）。
