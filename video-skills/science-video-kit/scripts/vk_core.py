@@ -1,13 +1,14 @@
 """vk_core - style-neutral 2D drawing core for procedural science videos (cairo + cv2 + PIL).
 
   Canvas      cairo base surface + half-res EMISSION surface (cv.g, additive) that gets bloomed in finish()
-  helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise
+  helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise,
+              splat_points (thousands of sub-pixel point lights into a numpy image)
   effects     tracer (glowing streak), muzzle (star flash + smoke), impact (dust burst + shock ring), dust_motes,
               reticle, dashed_line, arrow_head, rrect, panel
   text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
               cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
   compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
-  post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder, chromatic aberration, vignette, grain
+  post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder (cv.shoulder), chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
 Frame size: set env VK_W / VK_H before importing (default 1920x1080; 1080x1920 for vertical).
@@ -105,6 +106,8 @@ class Canvas:
         self.grain = 1.0
         self.vignette = 1.0
         self.ca = 0.0             # chromatic aberration strength
+        self.shoulder = 1.2       # highlight roll-off above 0.85: output tops out near 1/shoulder (1.2 -> ~0.83 grey);
+        #                           lower it (e.g. 0.15) when a big area must read as true white (blazing sky, flash)
         self.text_boxes = []      # [(text dict, ink box (x0, y0, x1, y1) px)] filled by finish()
 
     def both(self):
@@ -166,6 +169,28 @@ def paint_img(ctx, surf, x=0, y=0, alpha=1.0, scale=1.0):
     else:
         ctx.paint_with_alpha(alpha)
     ctx.restore()
+
+
+def splat_points(img, xs, ys, flux, col=(1.0, 1.0, 1.0), sigma=0.8):
+    """add many point lights (stars, sparks, particles) to a float HxWx3 image in place: sub-pixel bilinear deposit
+    (no 1 px jitter when they drift slowly) then a Gaussian blur of `sigma` px for a round core. flux: scalar or
+    per-point array. Thousands of points cost about one blur - far cheaper than one cairo arc each."""
+    h, w = img.shape[:2]
+    xs, ys = np.asarray(xs, np.float64), np.asarray(ys, np.float64)
+    f = np.broadcast_to(np.asarray(flux, np.float32), xs.shape)
+    x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
+    ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
+    x0, y0, f = x0[ok], y0[ok], f[ok]
+    fx, fy = (xs[ok] - x0).astype(np.float32), (ys[ok] - y0).astype(np.float32)
+    acc = np.zeros((h, w), np.float32)
+    np.add.at(acc, (y0, x0), f * (1 - fx) * (1 - fy))
+    np.add.at(acc, (y0, x0 + 1), f * fx * (1 - fy))
+    np.add.at(acc, (y0 + 1, x0), f * (1 - fx) * fy)
+    np.add.at(acc, (y0 + 1, x0 + 1), f * fx * fy)
+    if sigma > 0:
+        acc = cv2.GaussianBlur(acc, (0, 0), sigma)
+    img += acc[..., None] * np.asarray(col, np.float32)
+    return img
 
 
 # ---------------------------------------------------------------- noise
@@ -720,7 +745,7 @@ def finish(cv, frame_idx=0):
     if cv.flash > 0:
         img += np.array([1.0, 0.85, 0.6], np.float32) * cv.flash
     # tone: soft shoulder
-    img = img / (1 + np.maximum(img - 0.85, 0) * 1.2)
+    img = img / (1 + np.maximum(img - 0.85, 0) * cv.shoulder)
     if cv.ca > 0:
         sft = int(cv.ca)
         img[..., 0] = np.roll(img[..., 0], sft, 1)

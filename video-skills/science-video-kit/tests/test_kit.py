@@ -87,6 +87,29 @@ class CoreTests(unittest.TestCase):
         v.finish(cv2_, 0)
         self.assertEqual(len(v.text_in_zones(cv2_, corners)), 1)
 
+    def test_shoulder_and_splat_points(self):
+        import vk_core
+        cv = vk_core.Canvas()
+        cv.c.set_source_rgb(1, 1, 1)
+        cv.c.paint()
+        cv.flash = 1.0
+        cv.grain = 0
+        cv.vignette = 0
+        grey = vk_core.finish(cv)
+        self.assertLess(grey.mean(), 225)            # default shoulder caps highlights below white
+        cv2_ = vk_core.Canvas()
+        cv2_.c.set_source_rgb(1, 1, 1)
+        cv2_.c.paint()
+        cv2_.flash = 1.0
+        cv2_.grain = 0
+        cv2_.vignette = 0
+        cv2_.shoulder = 0.1
+        self.assertGreater(vk_core.finish(cv2_).mean(), 250)
+        img = np.zeros((40, 60, 3), np.float32)
+        vk_core.splat_points(img, [10.5, 30.25, -5, 70], [20.5, 10.75, 3, 3], 1.0, (1, 0.5, 0.25), sigma=0)
+        self.assertAlmostEqual(float(img[..., 0].sum()), 2.0, places=4)   # off-frame points dropped, flux kept
+        self.assertAlmostEqual(float(img[20, 10, 0]), 0.25, places=4)
+
     def test_persist_surface_survives_keep_clear(self):
         import vk_core as v
         s = v.to_surface(np.full((8, 8, 3), 0.5, np.float32), persist=True)
