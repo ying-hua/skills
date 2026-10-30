@@ -4,7 +4,7 @@
   helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise,
               splat_points (thousands of sub-pixel point lights into a numpy image)
   effects     tracer (glowing streak), muzzle (star flash + smoke), impact (dust burst + shock ring), dust_motes,
-              reticle, dashed_line, arrow_head, rrect, panel
+              reticle, dashed_line, arrow_head, polyline (partial stroke-on), rrect, panel
   text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
               cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
   compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
@@ -374,6 +374,32 @@ def arrow_head(ctx, p, ang, size, col, alpha=1.0):
     ctx.set_source_rgba(*col, alpha)
     ctx.fill()
     ctx.restore()
+
+
+def polyline(ctx, pts, close=True, frac=1.0):
+    """add a polyline path (call stroke()/fill() yourself). frac < 1 traces only that share of the total length - a
+    'drawn on' outline (stick in sand, brush, pen). Starts with new_path(): after show_text() cairo keeps a current
+    point, and the first segment would otherwise be joined to it."""
+    ctx.new_path()
+    if len(pts) < 2 or frac <= 0:
+        return
+    P = list(pts) + ([pts[0]] if close else [])
+    if frac >= 1:
+        ctx.move_to(*P[0])
+        for p in P[1:-1] if close else P[1:]:
+            ctx.line_to(*p)
+        if close:
+            ctx.close_path()
+        return
+    segs = [math.dist(P[i], P[i + 1]) for i in range(len(P) - 1)]
+    L = sum(segs) * frac
+    ctx.move_to(*P[0])
+    for i, s in enumerate(segs):
+        if L <= 0:
+            break
+        u = min(1.0, L / s) if s > 0 else 1.0
+        ctx.line_to(P[i][0] + (P[i + 1][0] - P[i][0]) * u, P[i][1] + (P[i + 1][1] - P[i][1]) * u)
+        L -= s
 
 
 def rrect(ctx, x, y, w, h, r):

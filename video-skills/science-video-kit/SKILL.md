@@ -40,7 +40,8 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 - 长时间渲染放后台，用 `tail` 轮询日志。
 
 **4. 音频**
-- 模板 `audio.py`：按场景 cue 渲染音效，叠加外部 BGM 或自写配乐，压低音乐（`duck`），需要时用 `level` 拉平长片的动态，母带处理。`python audio.py` 生成 `out/soundtrack.wav`。
+- 模板 `audio.py`：按场景 cue 渲染音效，叠加外部 BGM 或自写配乐，压低音乐（`duck`），需要时用 `level` 拉平长片的动态，母带处理。
+- BGM 的安静段 / 重拍想对准某个画面：用 `vk_bgm.py` 的 QUIET / HITS 算出偏移，`load_bgm(path, total, offset=...)`；局部压低音乐用 `automate`（放在 `level` 之后）。`python audio.py` 生成 `out/soundtrack.wav`。
 
 **5. 质检与压制**
 - `python vk_scan.py spikes out/chunks/*.mp4`：报告闪帧、NaN 黑块等可疑帧。
@@ -57,10 +58,10 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 
 | 文件 | 内容 |
 |---|---|
-| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`splat_points` 一次画上万颗亚像素点光源（星空、粒子），`to_surface`/`paint_img` 贴 numpy 纹理（缓存纹理用 `persist=True`）。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体、等宽等；该字体缺的字按“指定字体 → 拉丁/中文默认 → 符号字体”依次退回，`has_glyph` / `missing_glyphs` 可查），`add_math` 用 matplotlib mathtext 排公式（真正的上下标、分数、根号），`set_fonts`，`set_tags`；`finish` 后 `cv.text_boxes` 记录每条文字的字墨外框，`text_in_zones(cv, zones)` 检查封面避让区。<br>**合成**：`group(cv, fn, a)` 把一段子场景（两层 + 文字）当整体淡入淡出。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩（`cv.shoulder`，调低才能出纯白）、色差、暗角、颗粒、淡出） |
+| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`splat_points` 一次画上万颗亚像素点光源（星空、粒子），`to_surface`/`paint_img` 贴 numpy 纹理（缓存纹理用 `persist=True`）。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`polyline`（折线路径，`frac<1` 只画前一段长度，做“一笔笔画出来”的描边）、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体、等宽等；该字体缺的字按“指定字体 → 拉丁/中文默认 → 符号字体”依次退回，`has_glyph` / `missing_glyphs` 可查），`add_math` 用 matplotlib mathtext 排公式（真正的上下标、分数、根号），`set_fonts`，`set_tags`；`finish` 后 `cv.text_boxes` 记录每条文字的字墨外框，`text_in_zones(cv, zones)` 检查封面避让区。<br>**合成**：`group(cv, fn, a)` 把一段子场景（两层 + 文字）当整体淡入淡出。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩（`cv.shoulder`，调低才能出纯白）、色差、暗角、颗粒、淡出） |
 | `vk_gl.py` | 无头 moderngl 框架：抖动多采样累积 + 快门运动模糊，带 NaN/Inf 保护的 resolve，mip 泛光，ACES，调色，分条渲染防 TDR，`look_at`，`project`（3D 坐标转屏幕坐标，用于贴标签）。着色器约定见文件头注释 |
 | `vk_render.py` | `sheet` 联系表 · `render` 并行可续渲分段（`--from/--to` 只重渲某个时间段）· `concat` |
-| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
+| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`（`offset=` 跳过开头若干秒，把 BGM 的段落挪到想要的画面下）、`automate`（按时间段写音量自动化，如某句台词处把音乐压低 13 dB 再拉回）、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
 | `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES |
 | `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、成片抽帧 `sheet` |
 | `vk_spectral.py` | 光与色觉数学（300–730 nm，含紫外）：`wavelength_rgb` 画彩虹/光谱用的波长→sRGB，CIE 1931 配色函数解析拟合 `cmf`、日光 `daylight`、反射光谱→XYZ→sRGB（`spectrum_xyz`/`xyz_to_linear`/`linear_to_srgb`），Govardovskii 视蛋白模板 `opsin(λmax)` 和 `catches`（任意动物感光细胞的量子捕获，白点归一），`simulate_dichromat`（红/绿色盲模拟），`g`/`sig` 搭反射光谱 |

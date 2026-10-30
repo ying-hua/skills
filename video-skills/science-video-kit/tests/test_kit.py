@@ -124,7 +124,7 @@ class AudioTests(unittest.TestCase):
         import inspect
         import vk_audio as A
         args = {'f': 440.0, 'd': 0.5, 'notes': [60, 64, 67], 'x': np.random.randn(4800), 'm': 60, 'f0': 300.0, 'f1': 3000.0}
-        skip = {'render_cues', 'click_rain', 'load_bgm', 'duck', 'master', 'P', 'norm', 'filt'}
+        skip = {'render_cues', 'click_rain', 'load_bgm', 'duck', 'automate', 'master', 'P', 'norm', 'filt'}
         for name, fn in inspect.getmembers(A, inspect.isfunction):
             if fn.__module__ != 'vk_audio' or name.startswith('_') or name in skip:
                 continue
@@ -221,6 +221,39 @@ class LevelTests(unittest.TestCase):
         self.assertAlmostEqual(gap_in, 20, delta=0.5)
         self.assertLess(gap_out, 12)
         self.assertTrue(np.allclose(A.movavg(np.ones(1000), 101), 1.0))
+
+
+class AutomationTests(unittest.TestCase):
+    def test_automate_dip_and_polyline(self):
+        import vk_audio as A
+        import cairo
+        import vk_core as C
+        x = np.ones((6 * A.SR, 2))
+        y = A.automate(x, [(2.0, 3.0, -20, 0.5)])
+        self.assertAlmostEqual(y[int(2.5 * A.SR), 0], 0.1, places=3)
+        self.assertAlmostEqual(y[int(0.5 * A.SR), 0], 1.0, places=6)
+        self.assertAlmostEqual(y[int(5.0 * A.SR), 1], 1.0, places=6)
+        self.assertTrue(0.1 < y[int(1.75 * A.SR), 0] < 1.0)
+        s = cairo.ImageSurface(cairo.FORMAT_RGB24, 100, 100)
+        ctx = cairo.Context(s)
+        ctx.move_to(90, 90)                           # stray current point (as left by show_text)
+        C.polyline(ctx, [(10, 10), (50, 10), (50, 50)], close=False, frac=0.5)
+        x0, y0, x1, y1 = ctx.path_extents()
+        self.assertEqual((x0, y0, x1, y1), (10, 10, 50, 10))    # half of 80 px = the first 40 px segment only
+
+    @unittest.skipUnless(has_ffmpeg(), 'ffmpeg missing')
+    def test_load_bgm_offset(self):
+        import vk_audio as A
+        from scipy.io import wavfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'ramp.wav')
+            sig = np.zeros(4 * A.SR, np.int16)
+            sig[2 * A.SR:] = 16000                    # silence for 2 s, then a constant level
+            wavfile.write(p, A.SR, np.stack([sig, sig], 1))
+            b0 = A.load_bgm(p, 1.0)
+            b2 = A.load_bgm(p, 1.0, offset=2.0)
+            self.assertLess(np.abs(b0[:A.SR // 2]).max(), 1e-3)
+            self.assertGreater(np.abs(b2[100:A.SR // 2]).min(), 0.4)
 
 
 class SpectralTests(unittest.TestCase):

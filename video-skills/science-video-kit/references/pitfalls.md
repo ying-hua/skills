@@ -20,6 +20,8 @@
 u} = rac{8\pi G}{c^4} T_{\mu
 u}', x, y, size)`（matplotlib mathtext，无需安装 TeX）；希腊字母 ν（nu）不要用拉丁字母 v 代替。
 
+- **圆、折线的开头多出一条长长的直线，连到画面外某处**：`show_text()` 之后 cairo 保留当前点（`save/restore` 不会清掉路径），下一次 `arc()` 会从那个点连一条线过来。逐字 `show_text` 之后调用 `ctx.new_path()`；`polyline` 已自带。
+- **分段并行渲染后，各分段之间纹理（纸、沙、噪声）一跳一跳**：Python 的 `hash(str)` 每个进程随机，拿它当随机种子，每个工作进程生成的纹理都不一样。种子用固定数字或 `sum(map(ord, name))`。
 - **`add_text` 的文字不跟随 `set_cam`**：文字在 `finish` 里按屏幕坐标合成，镜头缩放/平移时会留在原位。要么自己把世界坐标换算成屏幕坐标（`W/2 + (x - cx) * zoom`），要么在镜头动起来前把这些标签淡出。
 - **整场景交叉淡化**：用 `vk_core.group(cv, lambda cv: draw_scene(cv), a)`（在 `cv.c` 和 `cv.g` 上同时 `push_group` → 画 → `paint_with_alpha(a)`，新增的 `cv.texts` alpha 乘 a）；最底下那个场景保持不透明，否则交界处会透出黑底。
 - **缩放中的重复点阵/网格出现摩尔纹、或逐点绘制太慢**：画一个单元的小 tile，用 `cairo.SurfacePattern` + `EXTEND_REPEAT` + `FILTER_GOOD`（正确的缩小滤波）和缩放矩阵一次 `paint`；间距小于约 4 px 时再淡入一层均匀的平均色。
@@ -50,6 +52,7 @@ u}', x, y, size)`（matplotlib mathtext，无需安装 TeX）；希腊字母 ν�
 - **混音峰值超过 1**：不要整体除以峰值（会把全片压小），用 `master` 或 `tanh` 软削波；最终跑 `vk_finalize`（loudnorm −14 LUFS）。
 - **模拟里的咔哒声太密，变成白噪声**：增益按 1/√密度缩放（`click_rain` 已实现）。
 - **agent 无法试听**：用每秒电平数据做检查，并如实告知。
+- **在混音上先手动把音乐压低（某句沉重的台词），再过 `level`，压低的地方又被拉回来了**：`level` 就是把安静段抬高。顺序改为：音乐先 `level`，再 `automate` 压低，最后和音效混合。
 - **`np.convolve` 做几秒长的滑动平均（48 kHz 下窗口十几万点）要跑好几分钟**：用 `vk_audio.movavg`（cumsum，O(n)）。
 - **整片动态太大（安静段比高潮低 20 dB 以上，手机外放听不见）**：混音后、`master` 前过一遍 `vk_audio.level(mix)`（2.5 秒窗口的慢速电平拉平，ratio 0.5 约把差距减半），再用 `vk_scan levels` 看逐秒电平。
 - **Windows 中文系统 print 中文报错或乱码**：控制台是 GBK，运行前设 `PYTHONIOENCODING=utf-8`；脚本读写源码时 `open(..., encoding='utf-8')`。

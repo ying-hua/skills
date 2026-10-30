@@ -9,7 +9,8 @@ SFX (~35)       : gunshot, gunshot_small, boom, impact, thud, stomp, ricochet, w
 Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano,
                   square / tri (band-limited chiptune), choir (formant vowel pad)
 Music helpers   : mtof, beat grid via BPM; seq(notes, fn) to lay notes on a bus
-Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck,
+Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm(offset=), duck,
+                  automate (gain spans in dB),
                   level (slow leveler), movavg (O(n) moving average), master
 
 Every generator returns a float64 mono array normalised to a sensible peak. Tune gain at placement time.
@@ -570,8 +571,11 @@ def click_rain(bus, events, base_gain=0.08, dens_ref=300.0, span=None):
         bus.add(clicks[j % 4], t, g0 * (0.5 + s), pan)
 
 
-def load_bgm(path, total_sec):
-    p = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', path, '-ar', str(SR), '-ac', '2', '-f', 's16le', '-'],
+def load_bgm(path, total_sec, offset=0.0):
+    """decode a music file to a stereo array of total_sec (+1 s pad). offset = seconds of the track to skip, e.g. to
+    start on an energetic section or to slide a breakdown / hit under a chosen scene."""
+    pre = ['-ss', f'{offset:.3f}'] if offset > 0 else []
+    p = subprocess.run(['ffmpeg', '-loglevel', 'error', *pre, '-i', path, '-ar', str(SR), '-ac', '2', '-f', 's16le', '-'],
                        capture_output=True)
     b = np.frombuffer(p.stdout, np.int16).reshape(-1, 2).astype(np.float64) / 32768
     out = np.zeros((int(total_sec * SR) + SR, 2))
@@ -600,6 +604,20 @@ def level(x, win=2.5, ratio=0.55, gmin=0.6, gmax=3.5):
     ref = np.sqrt(m.mean())
     g = movavg(np.clip((ref / rms) ** ratio, gmin, gmax), SR // 2)
     return x * (g[:, None] if st else g)
+
+
+def automate(x, spans):
+    """hand-drawn gain automation (mono or stereo): spans = [(t0, t1, gain_db, ramp_s)] - hold gain_db between t0 and
+    t1 with smoothstep ramps of ramp_s outside them; overlapping spans multiply. Use it to pull the music almost out
+    for a sombre beat and bring it back on a cue. Apply AFTER level(), which would otherwise lift the dip back up."""
+    n = len(x)
+    tt_ = np.arange(n) / SR
+    g = np.ones(n)
+    for t0, t1, db, rp in spans:
+        rp = max(rp, 1e-3)
+        k = np.clip(np.minimum((tt_ - (t0 - rp)) / rp, ((t1 + rp) - tt_) / rp), 0, 1)
+        g *= 1 - (1 - 10 ** (db / 20)) * k * k * (3 - 2 * k)
+    return x * (g[:, None] if x.ndim == 2 else g)
 
 
 def duck(music, sfx, amount=1.2, speed_hz=3.0):
