@@ -21,6 +21,36 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(img.shape, (1080, 1920, 3))
         self.assertGreater(img[150:250, 600:1320].max(), 200, 'template title must be visible on frame 0')
 
+    def test_cam_globe_pnoise(self):
+        import vk_core as v
+        cam = v.Cam((0, 0, -10), (0, 0, 0), fov=90)
+        sx, sy, z = cam.proj(np.array([[0.0, 0, 0], [10.0, 0, 0], [0, 0, -20.0]]))
+        self.assertAlmostEqual(sx[0], v.W / 2)
+        self.assertAlmostEqual(sx[1], 0.0, places=3)           # right-handed, y up: looking along +z, +x is screen-left; 45 deg = frame edge at fov 90
+        self.assertLess(z[2], 0)                               # behind the camera
+        d = cam.rays(8, 6)
+        self.assertEqual(d.shape, (6, 8, 3))
+        self.assertTrue(np.allclose(np.linalg.norm(d, axis=-1), 1, atol=1e-5))
+        # globe round trip: project a point, look it up again through the inverse mapping
+        lon, lat = 31.0, 47.0
+        x, y, zz = v.ortho_project(lon, lat, 10.0, 30.0)
+        self.assertGreater(zz, 0)
+        px, py = 960 + x * 400, 540 - y * 400
+        L, B, inside, _, box = v.ortho_lonlat(960, 540, 400, 10.0, 30.0)
+        i, j = int(py) - box[1], int(px) - box[0]
+        self.assertTrue(inside[i, j])
+        self.assertLess(abs(L[i, j] - lon), 0.3)
+        self.assertLess(abs(B[i, j] - lat), 0.3)
+        tex = np.zeros((90, 180, 3), np.float32)
+        tex[:, :90] = 1.0                                      # western hemisphere white
+        self.assertGreater(float(v.sample_equirect(tex, np.array([[-90.0]]), np.array([[0.0]]))[0, 0, 0]), 0.9)
+        n = v.pnoise(64, 128, 3)
+        self.assertAlmostEqual(float(n.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(n.max()), 1.0, places=5)
+        seam = np.abs(n[:, 0] - n[:, -1]).mean()
+        inner = np.abs(np.diff(n, axis=1)).mean()
+        self.assertLess(seam, 3 * inner, 'pnoise must tile in x')
+
     def test_text_markup_and_tags(self):
         import vk_core as v
         v.set_tags({'k': (1.0, 0.2, 0.2)})

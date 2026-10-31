@@ -2,6 +2,8 @@
 
   Canvas      cairo base surface + half-res EMISSION surface (cv.g, additive) that gets bloomed in finish()
   helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise,
+              pnoise (fbm that tiles in x for equirect textures),
+  3D          Cam (look-at pinhole: proj points, per-pixel rays), ortho_project / ortho_lonlat / sample_equirect (globes)
               splat_points (thousands of sub-pixel point lights into a numpy image)
   effects     tracer (glowing streak), muzzle (star flash + smoke), impact (dust burst + shock ring), dust_motes,
               reticle, dashed_line, arrow_head, polyline (partial stroke-on), rrect, panel
@@ -205,6 +207,101 @@ def fbm(h, w, seed=0, octaves=6, base=4, persist=0.55):
         tot += amp
         amp *= persist
     return out / tot
+
+
+def pnoise(h, w, seed=0, octaves=5, base=4, persist=0.55):
+    """fbm that tiles in x (left edge continues the right edge), normalised to 0..1. Use it for equirect (lon x lat)
+    textures wrapped on a sphere - plain fbm leaves a visible seam at lon = +-180. Detail still pinches toward the
+    poles of a sphere; fade it out above ~75 deg latitude."""
+    rng = np.random.default_rng(seed)
+    out = np.zeros((h, w), np.float32)
+    amp, tot = 1.0, 0.0
+    for o in range(octaves):
+        gw = base * 2 ** o
+        gh = max(2, int(round(gw * h / w)))
+        g = rng.random((gh + 3, gw + 3)).astype(np.float32)
+        g[:, -3:] = g[:, :3]
+        big = cv2.resize(g, (int(w * (gw + 3) / gw), int(h * (gh + 3) / gh)), interpolation=cv2.INTER_CUBIC)
+        ox, oy = int(w / gw), int(h / gh)
+        out += amp * big[oy:oy + h, ox:ox + w]
+        tot += amp
+        amp *= persist
+    out -= out.min()
+    return out / max(1e-6, out.max())
+
+
+# ---------------------------------------------------------------- 3D pinhole camera (cairo / numpy scenes)
+class Cam:
+    """look-at pinhole camera for drawing 3D scenes with cairo/numpy (y up). proj() maps points to screen pixels,
+    rays() gives per-pixel view directions for ray casting backgrounds (e.g. the inside of a sphere) on a grid of any
+    size (render at half res and upscale)."""
+
+    def __init__(self, pos, target, fov=60.0, roll=0.0, w=None, h=None):
+        self.p = np.asarray(pos, np.float64)
+        f = np.asarray(target, np.float64) - self.p
+        f /= np.linalg.norm(f)
+        r = np.cross(f, [0.0, 1.0, 0.0])
+        if np.linalg.norm(r) < 1e-6:          # looking straight up/down: pick any right vector
+            r = np.array([1.0, 0.0, 0.0])
+        r /= np.linalg.norm(r)
+        u = np.cross(r, f)
+        if roll:
+            cr, sr = math.cos(roll), math.sin(roll)
+            r, u = r * cr + u * sr, -r * sr + u * cr
+        self.r, self.u, self.f = r, u, f
+        self.w, self.h = w or W, h or H
+        self.foc = (self.w / 2) / math.tan(math.radians(fov) / 2)     # horizontal fov in degrees
+
+    def proj(self, P):
+        """P (..., 3) -> (sx, sy, depth); depth <= 0 means behind the camera (cull those)"""
+        d = np.asarray(P, np.float64) - self.p
+        x, y, z = d @ self.r, d @ self.u, d @ self.f
+        zz = np.where(z > 1e-3, z, 1e-3)
+        return self.w / 2 + self.foc * x / zz, self.h / 2 - self.foc * y / zz, z
+
+    def rays(self, w, h):
+        """unit view directions (h, w, 3) float32 for a w x h pixel grid covering the frame"""
+        foc = self.foc * w / self.w
+        X, Y = np.meshgrid((np.arange(w, dtype=np.float32) + 0.5 - w / 2) / foc,
+                           -(np.arange(h, dtype=np.float32) + 0.5 - h / 2) / foc)
+        d = X[..., None] * self.r.astype(np.float32) + Y[..., None] * self.u.astype(np.float32) +             self.f.astype(np.float32)
+        return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+
+# ---------------------------------------------------------------- orthographic globe from an equirect texture
+def ortho_project(lon, lat, lon0, lat0):
+    """(deg) -> unit-disc x (east), y (north, up), z (> 0 on the visible hemisphere) for a globe centred on
+    (lon0, lat0). Screen point: (cx + x * r, cy - y * r)."""
+    lam = np.radians(np.asarray(lon, np.float64) - lon0)
+    ph = np.radians(np.asarray(lat, np.float64))
+    X, Y, Z = np.cos(ph) * np.cos(lam), np.cos(ph) * np.sin(lam), np.sin(ph)
+    cl, sl = math.cos(math.radians(lat0)), math.sin(math.radians(lat0))
+    return Y, -X * sl + Z * cl, X * cl + Z * sl
+
+
+def ortho_lonlat(cx, cy, r, lon0, lat0, box=None, step=1):
+    """inverse of ortho_project for every screen pixel in box=(x0, y0, x1, y1) (default: the disc's bounding box
+    clipped to the frame). Returns lon, lat (deg), inside-disc mask, z (1 at the centre, 0 at the limb) and the
+    box used - feed lon/lat to sample_equirect() and shade with z."""
+    if box is None:
+        box = (max(0, int(cx - r - 2)), max(0, int(cy - r - 2)), min(W, int(cx + r + 2)), min(H, int(cy + r + 2)))
+    x0, y0, x1, y1 = box
+    X, Y = np.meshgrid(np.arange(x0, x1, step, dtype=np.float32) + 0.5, np.arange(y0, y1, step, dtype=np.float32) + 0.5)
+    nx, ny = (X - cx) / r, -(Y - cy) / r
+    rr = nx * nx + ny * ny
+    z = np.sqrt(np.clip(1 - rr, 0, 1))
+    cl, sl = math.cos(math.radians(lat0)), math.sin(math.radians(lat0))
+    lon = (np.degrees(np.arctan2(nx, z * cl - ny * sl)) + lon0 + 180) % 360 - 180
+    lat = np.degrees(np.arcsin(np.clip(z * sl + ny * cl, -1, 1)))
+    return lon, lat, rr < 1, z, box
+
+
+def sample_equirect(tex, lon, lat):
+    """bilinear lookup of an equirect texture (rows = 90..-90 lat, cols = -180..180 lon) that wraps in longitude"""
+    th, tw = tex.shape[:2]
+    mx = ((np.asarray(lon) + 180) / 360 * tw - 0.5).astype(np.float32)
+    my = ((90 - np.asarray(lat)) / 180 * th - 0.5).astype(np.float32)
+    return cv2.remap(tex, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
 
 # ---------------------------------------------------------------- generic effects
