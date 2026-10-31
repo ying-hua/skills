@@ -21,6 +21,18 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(img.shape, (1080, 1920, 3))
         self.assertGreater(img[150:250, 600:1320].max(), 200, 'template title must be visible on frame 0')
 
+    def test_braam_soft_and_audible(self):
+        import vk_audio as A
+        x = A.braam(3.0)
+        self.assertEqual(x.ndim, 1)
+        self.assertAlmostEqual(len(x) / A.SR, 5.0, delta=0.05)
+        peak = np.abs(x).max()
+        self.assertLess(np.abs(x[:int(0.03 * A.SR)]).max(), 0.1 * peak)   # swells in, no jump scare
+        X = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertGreater(X[f > 200].sum() / X.sum(), 0.08)              # audible on small speakers
+        self.assertLess(X[f > 2500].sum() / X.sum(), 0.01)                # no buzz
+
     def test_pad_choir_reject_hz(self):
         import vk_audio as A
         with self.assertRaises(ValueError):

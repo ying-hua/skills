@@ -3,7 +3,7 @@
 Building blocks : tt, noise, env, sweep, filt, P (pad-sum different lengths), norm, bandsweep (moving bandpass)
 Spaces          : reverb(x, d) (stereo IR convolution), echo(x, taps) (canyon/slap), pingpong
 SFX (~35)       : gunshot, gunshot_small, boom, impact, thud, stomp, ricochet, whoosh, whoosh_in, riser, riser_short,
-                  rewind, pop, tick, tick_run, chime (cha-ching), bell_hit, hammer, click, spin, lock, deny, braam,
+                  rewind, pop, tick, tick_run, chime (cha-ching), bell_hit, hammer, click, spin, lock, deny, braam (soft swell),
                   stamp, mystery, hit_soft, cloth, heartbeat, whistle_up, split, merge, computer, wind, flow_bed,
                   sparkle, glitch, geiger
 Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano,
@@ -281,11 +281,24 @@ def deny():
     return norm(filt(x, 'low', 1200), 0.5)
 
 
-def braam(d=3.0, root=55.0):
+def braam(d=3.0, root=82.4):
+    """soft cinematic swell: band-limited detuned saws (root, octave below, fifth) under a closing lowpass,
+    sine-squared 0.25 s attack, short room tail. Mono, length d + 2 s.
+    Mid harmonics (200-900 Hz) keep it audible on phone / laptop speakers; no square waves or tanh, so no buzz."""
     t = tt(d)
-    x = sum(np.sign(np.sin(2 * np.pi * f * t + p)) for f, p in
-            ((root, 0), (root * 1.007, 1), (root * 1.498, 2), (root * 2.005, 0.5)))
-    return norm(np.tanh(filt(x, 'low', 700) * env(d, 0.03, 1.1) * 1.5), 0.8)
+
+    def saw(f, n):
+        return sum(np.sin(2 * np.pi * k * f * t + 0.3 * k) / k for k in range(1, n + 1))
+
+    x = saw(root, 12) + 0.8 * saw(root * 1.004, 12) + 0.6 * saw(root * 1.5, 8) + 0.4 * saw(root * 0.5, 16)
+    a = 0.25
+    e = np.exp(-np.maximum(t - a, 0))
+    na = int(a * SR)
+    e[:na] = np.sin(np.linspace(0, np.pi / 2, na)) ** 2
+    nr = min(int(0.5 * SR), len(e))
+    e[len(e) - nr:] *= np.linspace(1, 0, nr)
+    y = reverb(filt(x, 'low', 900) * e, d=2.0, wet=0.2, bright=2000).mean(1)
+    return norm(y, 0.8)
 
 
 def stamp():
