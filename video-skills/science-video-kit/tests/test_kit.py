@@ -21,6 +21,14 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(img.shape, (1080, 1920, 3))
         self.assertGreater(img[150:250, 600:1320].max(), 200, 'template title must be visible on frame 0')
 
+    def test_pad_choir_reject_hz(self):
+        import vk_audio as A
+        with self.assertRaises(ValueError):
+            A.pad([A.mtof(53)], 0.2)
+        with self.assertRaises(ValueError):
+            A.choir([A.mtof(53)], 0.2)
+        self.assertGreater(float(np.abs(A.pad([53, 60], 0.3)).max()), 0)
+
     def test_cam_globe_pnoise(self):
         import vk_core as v
         cam = v.Cam((0, 0, -10), (0, 0, 0), fov=90)

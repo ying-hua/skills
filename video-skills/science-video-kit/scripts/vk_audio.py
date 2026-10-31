@@ -412,7 +412,15 @@ def supersaw(f, d, n=5, detune=0.012, cut=2500, vel=1.0, a=0.3, r=0.6):
     return filt(x / n, 'low', cut) * adsr(d, a, 0.2, 0.8, r) * vel
 
 
+def _midi(notes, fn):
+    """pad/choir take MIDI note numbers; Hz values (e.g. [mtof(53)]) would be converted twice and alias into a shrill
+    fixed whistle (pad) or lose all tone (choir) - fail loudly instead"""
+    if max(notes) > 127:
+        raise ValueError(f'{fn}(): notes are MIDI numbers (e.g. 53), not Hz - got {max(notes):.1f}')
+
+
 def pad(notes, d, bright=1500, vel=1.0):
+    _midi(notes, 'pad')
     t = tt(d)
     x = np.zeros(len(t))
     for m in notes:
@@ -506,6 +514,7 @@ def tri(f, d, vel=1.0):
 def choir(notes, d, vel=1.0, a=1.5, formants=((750, 1.0, 140), (1200, 0.55, 160), (2600, 0.25, 260))):
     """breathy vowel 'ah' pad: harmonics of each midi note weighted by formant bumps (centre Hz, gain, width) + vibrato.
     Change formants for other vowels, e.g. 'oo' ((300, 1, 90), (870, 0.5, 120), (2240, 0.15, 200))."""
+    _midi(notes, 'choir')
     t = tt(d)
     x = np.zeros(len(t))
     for j, m in enumerate(notes):
