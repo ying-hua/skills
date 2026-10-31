@@ -21,6 +21,56 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(img.shape, (1080, 1920, 3))
         self.assertGreater(img[150:250, 600:1320].max(), 200, 'template title must be visible on frame 0')
 
+    def test_braam_soft_and_audible(self):
+        import vk_audio as A
+        x = A.braam(3.0)
+        self.assertEqual(x.ndim, 1)
+        self.assertAlmostEqual(len(x) / A.SR, 5.0, delta=0.05)
+        peak = np.abs(x).max()
+        self.assertLess(np.abs(x[:int(0.03 * A.SR)]).max(), 0.1 * peak)   # swells in, no jump scare
+        X = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertGreater(X[f > 200].sum() / X.sum(), 0.08)              # audible on small speakers
+        self.assertLess(X[f > 2500].sum() / X.sum(), 0.01)                # no buzz
+
+    def test_pad_choir_reject_hz(self):
+        import vk_audio as A
+        with self.assertRaises(ValueError):
+            A.pad([A.mtof(53)], 0.2)
+        with self.assertRaises(ValueError):
+            A.choir([A.mtof(53)], 0.2)
+        self.assertGreater(float(np.abs(A.pad([53, 60], 0.3)).max()), 0)
+
+    def test_cam_globe_pnoise(self):
+        import vk_core as v
+        cam = v.Cam((0, 0, -10), (0, 0, 0), fov=90)
+        sx, sy, z = cam.proj(np.array([[0.0, 0, 0], [10.0, 0, 0], [0, 0, -20.0]]))
+        self.assertAlmostEqual(sx[0], v.W / 2)
+        self.assertAlmostEqual(sx[1], 0.0, places=3)           # right-handed, y up: looking along +z, +x is screen-left; 45 deg = frame edge at fov 90
+        self.assertLess(z[2], 0)                               # behind the camera
+        d = cam.rays(8, 6)
+        self.assertEqual(d.shape, (6, 8, 3))
+        self.assertTrue(np.allclose(np.linalg.norm(d, axis=-1), 1, atol=1e-5))
+        # globe round trip: project a point, look it up again through the inverse mapping
+        lon, lat = 31.0, 47.0
+        x, y, zz = v.ortho_project(lon, lat, 10.0, 30.0)
+        self.assertGreater(zz, 0)
+        px, py = 960 + x * 400, 540 - y * 400
+        L, B, inside, _, box = v.ortho_lonlat(960, 540, 400, 10.0, 30.0)
+        i, j = int(py) - box[1], int(px) - box[0]
+        self.assertTrue(inside[i, j])
+        self.assertLess(abs(L[i, j] - lon), 0.3)
+        self.assertLess(abs(B[i, j] - lat), 0.3)
+        tex = np.zeros((90, 180, 3), np.float32)
+        tex[:, :90] = 1.0                                      # western hemisphere white
+        self.assertGreater(float(v.sample_equirect(tex, np.array([[-90.0]]), np.array([[0.0]]))[0, 0, 0]), 0.9)
+        n = v.pnoise(64, 128, 3)
+        self.assertAlmostEqual(float(n.min()), 0.0, places=5)
+        self.assertAlmostEqual(float(n.max()), 1.0, places=5)
+        seam = np.abs(n[:, 0] - n[:, -1]).mean()
+        inner = np.abs(np.diff(n, axis=1)).mean()
+        self.assertLess(seam, 3 * inner, 'pnoise must tile in x')
+
     def test_text_markup_and_tags(self):
         import vk_core as v
         v.set_tags({'k': (1.0, 0.2, 0.2)})
@@ -41,12 +91,90 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(hasattr(v.tracer, 'cache_info'))
 
 
+    def test_font_override_falls_back_for_missing_glyphs(self):
+        import vk_core as v
+        lat = v._resolve(v.FONT_LAT2)
+        self.assertTrue(v.has_glyph(lat, 'A'))
+        self.assertFalse(v.has_glyph(lat, '中'))           # latin font: no CJK glyph -> default CJK font is used
+        self.assertIsNot(v._font_for('中', 40, 600, True, lat), v._font(lat, 40, 600))
+        # symbols missing from both defaults still find a font (or are reported by missing_glyphs)
+        self.assertNotEqual(v._font_choice('中', 48, 400, False, lat)[0], lat)   # override lacks it -> next font
+        self.assertEqual(v.missing_glyphs('Δt = √(1 − v²/c²) ≈ μν', font=lat), [])
+        self.assertEqual(v.missing_glyphs('􏿽'), ['􏿽'])
+        cv = v.Canvas()
+        v.add_text(cv, 'GPS 卫星', 960, 540, size=60, anim=None, font=lat)
+        v.finish(cv, 0)
+        self.assertEqual(len(cv.text_boxes), 1)
+
+    def test_add_math_formula(self):
+        import vk_core as v
+        try:
+            rgb, a = v.math_img(r"G_{\mu\nu} = \frac{8\pi G}{c^4} T_{\mu\nu}", 48)
+        except ImportError:
+            self.skipTest('no matplotlib')
+        self.assertGreater(a.shape[1], a.shape[0])
+        self.assertGreater(a.max(), 0.9)
+        self.assertEqual(a[0, 0], 0.0)                 # transparent background, not a white box
+        self.assertLess(a.mean(), 0.4)
+        self.assertGreater(a.shape[0], 48 * 1.5)        # stacked fraction at 48 px is taller than one text line
+        cv = v.Canvas()
+        v.add_math(cv, r"\Delta t' = \frac{\Delta t}{\sqrt{1 - v^2/c^2}}", 960, 540, 60)
+        self.assertGreater(v.finish(cv, 0)[480:600, 760:1160].max(), 200)
+        v._KEEP.clear()
+
+    def test_text_boxes_and_zones(self):
+        import vk_core as v
+        cv = v.Canvas()
+        v.add_text(cv, '封面标题', v.W * 0.7, v.H * 0.5, size=80, anim=None, glow=0.5)
+        v.finish(cv, 0)
+        self.assertEqual(len(cv.text_boxes), 1)
+        x0, y0, x1, y1 = cv.text_boxes[0][1]
+        self.assertTrue(x0 > v.W * 0.5 and y0 > v.H * 0.4 and y1 < v.H * 0.6)
+        corners = [(0, 0, 0.5, 0.25), (0, 0.87, 0.5, 1)]
+        self.assertEqual(v.text_in_zones(cv, corners), [])
+        cv2_ = v.Canvas()
+        v.add_text(cv2_, '左上角', 200, 100, size=60, anim=None)
+        v.finish(cv2_, 0)
+        self.assertEqual(len(v.text_in_zones(cv2_, corners)), 1)
+
+    def test_shoulder_and_splat_points(self):
+        import vk_core
+        cv = vk_core.Canvas()
+        cv.c.set_source_rgb(1, 1, 1)
+        cv.c.paint()
+        cv.flash = 1.0
+        cv.grain = 0
+        cv.vignette = 0
+        grey = vk_core.finish(cv)
+        self.assertLess(grey.mean(), 225)            # default shoulder caps highlights below white
+        cv2_ = vk_core.Canvas()
+        cv2_.c.set_source_rgb(1, 1, 1)
+        cv2_.c.paint()
+        cv2_.flash = 1.0
+        cv2_.grain = 0
+        cv2_.vignette = 0
+        cv2_.shoulder = 0.1
+        self.assertGreater(vk_core.finish(cv2_).mean(), 250)
+        img = np.zeros((40, 60, 3), np.float32)
+        vk_core.splat_points(img, [10.5, 30.25, -5, 70], [20.5, 10.75, 3, 3], 1.0, (1, 0.5, 0.25), sigma=0)
+        self.assertAlmostEqual(float(img[..., 0].sum()), 2.0, places=4)   # off-frame points dropped, flux kept
+        self.assertAlmostEqual(float(img[20, 10, 0]), 0.25, places=4)
+
+    def test_persist_surface_survives_keep_clear(self):
+        import vk_core as v
+        s = v.to_surface(np.full((8, 8, 3), 0.5, np.float32), persist=True)
+        v._KEEP.clear()
+        cv = v.Canvas()
+        v.paint_img(cv.c, s, v.W // 2, v.H // 2)
+        self.assertAlmostEqual(v.finish(cv, 0)[v.H // 2 + 4, v.W // 2 + 4].mean() / 255, 0.5, delta=0.12)
+
+
 class AudioTests(unittest.TestCase):
     def test_all_generators_finite(self):
         import inspect
         import vk_audio as A
         args = {'f': 440.0, 'd': 0.5, 'notes': [60, 64, 67], 'x': np.random.randn(4800), 'm': 60, 'f0': 300.0, 'f1': 3000.0}
-        skip = {'render_cues', 'click_rain', 'load_bgm', 'duck', 'master', 'P', 'norm', 'filt'}
+        skip = {'render_cues', 'click_rain', 'load_bgm', 'duck', 'automate', 'master', 'P', 'norm', 'filt'}
         for name, fn in inspect.getmembers(A, inspect.isfunction):
             if fn.__module__ != 'vk_audio' or name.startswith('_') or name in skip:
                 continue
@@ -55,6 +183,28 @@ class AudioTests(unittest.TestCase):
                 continue
             out = fn(*[args[r] for r in req])
             self.assertTrue(np.all(np.isfinite(out)), name)
+
+    def test_chiptune_and_choir(self):
+        import vk_audio as A
+        x = A.square(440.0, 0.3)
+        spec = np.abs(np.fft.rfft(x * np.hanning(len(x))))
+        fr = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertLess(spec[fr > 8000].max(), spec.max() * 1e-3, 'square must be band-limited')
+        self.assertTrue(np.all(np.isfinite(A.tri(110.0, 0.3))))
+        c = A.choir([60, 64, 67], 1.0)
+        self.assertTrue(np.all(np.isfinite(c)) and np.abs(c).max() > 0.01)
+
+    def test_group_fades_both_layers_and_text(self):
+        import vk_core as vc
+        cv = vc.Canvas()
+        def scene(cv):
+            cv.c.set_source_rgb(1, 1, 1)
+            cv.c.paint()
+            vc.add_text(cv, 'AB', vc.W / 2, vc.H / 2, size=40)
+        vc.group(cv, scene, 0.5)
+        v = vc.surf_np(cv.base, vc.W, vc.H)[5, 5, 0]
+        self.assertAlmostEqual(float(v), 0.5, delta=0.02)
+        self.assertAlmostEqual(cv.texts[0]['alpha'], 0.5)
 
     def test_bus_and_master(self):
         import vk_audio as A
@@ -106,6 +256,79 @@ class PipelineTests(unittest.TestCase):
                 A.master(A.Bus(0.5).x + 1e-3 * np.random.randn(int(1.5 * A.SR), 2), 0.5, os.path.join(d, 'out', 'soundtrack.wav'))
             run('vk_finalize.py', '--out', 'out/t.mp4', '--mb', '0.5')
             self.assertTrue(Path(d, 'out', 't.mp4').exists())
+
+
+class LevelTests(unittest.TestCase):
+    def test_level_narrows_dynamic_range(self):
+        import vk_audio as A
+        n = 4 * A.SR
+        x = np.random.default_rng(0).standard_normal((2 * n, 2)) * 0.01
+        x[n:] *= 10                                   # 20 dB jump
+        y = A.level(x, win=1.0, ratio=0.5)
+        db = lambda a: 10 * np.log10((a ** 2).mean())
+        gap_in = db(x[n + A.SR:]) - db(x[:n - A.SR])
+        gap_out = db(y[n + A.SR:]) - db(y[:n - A.SR])
+        self.assertAlmostEqual(gap_in, 20, delta=0.5)
+        self.assertLess(gap_out, 12)
+        self.assertTrue(np.allclose(A.movavg(np.ones(1000), 101), 1.0))
+
+
+class AutomationTests(unittest.TestCase):
+    def test_automate_dip_and_polyline(self):
+        import vk_audio as A
+        import cairo
+        import vk_core as C
+        x = np.ones((6 * A.SR, 2))
+        y = A.automate(x, [(2.0, 3.0, -20, 0.5)])
+        self.assertAlmostEqual(y[int(2.5 * A.SR), 0], 0.1, places=3)
+        self.assertAlmostEqual(y[int(0.5 * A.SR), 0], 1.0, places=6)
+        self.assertAlmostEqual(y[int(5.0 * A.SR), 1], 1.0, places=6)
+        self.assertTrue(0.1 < y[int(1.75 * A.SR), 0] < 1.0)
+        s = cairo.ImageSurface(cairo.FORMAT_RGB24, 100, 100)
+        ctx = cairo.Context(s)
+        ctx.move_to(90, 90)                           # stray current point (as left by show_text)
+        C.polyline(ctx, [(10, 10), (50, 10), (50, 50)], close=False, frac=0.5)
+        x0, y0, x1, y1 = ctx.path_extents()
+        self.assertEqual((x0, y0, x1, y1), (10, 10, 50, 10))    # half of 80 px = the first 40 px segment only
+
+    @unittest.skipUnless(has_ffmpeg(), 'ffmpeg missing')
+    def test_load_bgm_offset(self):
+        import vk_audio as A
+        from scipy.io import wavfile
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, 'ramp.wav')
+            sig = np.zeros(4 * A.SR, np.int16)
+            sig[2 * A.SR:] = 16000                    # silence for 2 s, then a constant level
+            wavfile.write(p, A.SR, np.stack([sig, sig], 1))
+            b0 = A.load_bgm(p, 1.0)
+            b2 = A.load_bgm(p, 1.0, offset=2.0)
+            self.assertLess(np.abs(b0[:A.SR // 2]).max(), 1e-3)
+            self.assertGreater(np.abs(b2[100:A.SR // 2]).min(), 0.4)
+
+
+class SpectralTests(unittest.TestCase):
+    def test_colour_vision_maths(self):
+        import vk_spectral as V
+        white = np.ones_like(V.LAM)
+        xyz = V.spectrum_xyz(white)
+        self.assertAlmostEqual(xyz[1], 1.0, places=6)
+        rgb = V.xyz_to_linear(xyz)
+        self.assertLess(rgb.max() - rgb.min(), 0.25)                 # daylight white is near-neutral
+        self.assertEqual(int(np.argmax(V.opsin(560))), int(np.argmin(abs(V.LAM - 560))))
+        q = V.catches(white * 0.5, [V.opsin(420), V.opsin(560)])
+        self.assertTrue(np.allclose(q, 0.5))                         # von Kries: grey -> equal catches
+        red = V.xyz_to_linear(V.spectrum_xyz(0.04 + 0.8 * V.sig(600, 9)))
+        green = V.xyz_to_linear(V.spectrum_xyz(0.04 + 0.4 * V.g(540, 25)))
+        self.assertGreater(red[0], red[1])
+        self.assertGreater(green[1], green[0])
+        d_r, d_g = V.simulate_dichromat(red), V.simulate_dichromat(green)
+        self.assertAlmostEqual(d_r[0], d_r[1], places=6)             # deuteranope: R and G collapse
+        self.assertEqual(V.wavelength_rgb(300), (0.0, 0.0, 0.0))
+        r, gg, b = V.wavelength_rgb(580)
+        self.assertGreater(r, 0.9)
+        self.assertGreater(gg, 0.9)
+        self.assertLess(b, 0.05)
+        self.assertTrue(np.allclose(V.srgb_to_linear(V.linear_to_srgb([0.2, 0.5, 0.9])), [0.2, 0.5, 0.9]))
 
 
 class GLTests(unittest.TestCase):

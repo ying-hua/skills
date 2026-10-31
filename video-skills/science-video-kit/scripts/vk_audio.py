@@ -3,12 +3,15 @@
 Building blocks : tt, noise, env, sweep, filt, P (pad-sum different lengths), norm, bandsweep (moving bandpass)
 Spaces          : reverb(x, d) (stereo IR convolution), echo(x, taps) (canyon/slap), pingpong
 SFX (~35)       : gunshot, gunshot_small, boom, impact, thud, stomp, ricochet, whoosh, whoosh_in, riser, riser_short,
-                  rewind, pop, tick, tick_run, chime (cha-ching), bell_hit, hammer, click, spin, lock, deny, braam,
+                  rewind, pop, tick, tick_run, chime (cha-ching), bell_hit, hammer, click, spin, lock, deny, braam (soft swell),
                   stamp, mystery, hit_soft, cloth, heartbeat, whistle_up, split, merge, computer, wind, flow_bed,
                   sparkle, glitch, geiger
-Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano
+Instruments     : fm_bell, pluck (Karplus-Strong), supersaw, pad, kick, snare, hat, sub, marimba, epiano,
+                  square / tri (band-limited chiptune), choir (formant vowel pad)
 Music helpers   : mtof, beat grid via BPM; seq(notes, fn) to lay notes on a bus
-Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm, duck, master
+Mixing          : Bus (stereo, constant-power pan), cue list -> bus, click_rain(events), load_bgm(offset=), duck,
+                  automate (gain spans in dB),
+                  level (slow leveler), movavg (O(n) moving average), master
 
 Every generator returns a float64 mono array normalised to a sensible peak. Tune gain at placement time.
 Instruments, scale and BPM are chosen per project.
@@ -278,11 +281,24 @@ def deny():
     return norm(filt(x, 'low', 1200), 0.5)
 
 
-def braam(d=3.0, root=55.0):
+def braam(d=3.0, root=82.4):
+    """soft cinematic swell: band-limited detuned saws (root, octave below, fifth) under a closing lowpass,
+    sine-squared 0.25 s attack, short room tail. Mono, length d + 2 s.
+    Mid harmonics (200-900 Hz) keep it audible on phone / laptop speakers; no square waves or tanh, so no buzz."""
     t = tt(d)
-    x = sum(np.sign(np.sin(2 * np.pi * f * t + p)) for f, p in
-            ((root, 0), (root * 1.007, 1), (root * 1.498, 2), (root * 2.005, 0.5)))
-    return norm(np.tanh(filt(x, 'low', 700) * env(d, 0.03, 1.1) * 1.5), 0.8)
+
+    def saw(f, n):
+        return sum(np.sin(2 * np.pi * k * f * t + 0.3 * k) / k for k in range(1, n + 1))
+
+    x = saw(root, 12) + 0.8 * saw(root * 1.004, 12) + 0.6 * saw(root * 1.5, 8) + 0.4 * saw(root * 0.5, 16)
+    a = 0.25
+    e = np.exp(-np.maximum(t - a, 0))
+    na = int(a * SR)
+    e[:na] = np.sin(np.linspace(0, np.pi / 2, na)) ** 2
+    nr = min(int(0.5 * SR), len(e))
+    e[len(e) - nr:] *= np.linspace(1, 0, nr)
+    y = reverb(filt(x, 'low', 900) * e, d=2.0, wet=0.2, bright=2000).mean(1)
+    return norm(y, 0.8)
 
 
 def stamp():
@@ -409,7 +425,15 @@ def supersaw(f, d, n=5, detune=0.012, cut=2500, vel=1.0, a=0.3, r=0.6):
     return filt(x / n, 'low', cut) * adsr(d, a, 0.2, 0.8, r) * vel
 
 
+def _midi(notes, fn):
+    """pad/choir take MIDI note numbers; Hz values (e.g. [mtof(53)]) would be converted twice and alias into a shrill
+    fixed whistle (pad) or lose all tone (choir) - fail loudly instead"""
+    if max(notes) > 127:
+        raise ValueError(f'{fn}(): notes are MIDI numbers (e.g. 53), not Hz - got {max(notes):.1f}')
+
+
 def pad(notes, d, bright=1500, vel=1.0):
+    _midi(notes, 'pad')
     t = tt(d)
     x = np.zeros(len(t))
     for m in notes:
@@ -482,6 +506,44 @@ def organ(f, d=2.0, vel=1.0, a=0.07, r=0.3):
     return x * adsr(d, a, 0.2, 0.85, r) * vel * 0.32
 
 
+def square(f, d, vel=1.0, a=0.003, dcy=0.08, s=0.5, r=0.04, top=7000.0):
+    """band-limited square (odd harmonics up to `top` Hz): 8-bit / chiptune leads and arps without aliasing"""
+    t = tt(d)
+    x = np.zeros(len(t))
+    k = 1
+    while k * f < min(top, SR * 0.45) and k < 60:
+        x += np.sin(2 * np.pi * k * f * t) / k
+        k += 2
+    return x * adsr(d, a, dcy, s, r) * vel * 0.5
+
+
+def tri(f, d, vel=1.0):
+    """band-limited triangle: soft chiptune bass"""
+    t = tt(d)
+    x = sum(((-1) ** ((k - 1) // 2)) * np.sin(2 * np.pi * k * f * t) / k ** 2 for k in (1, 3, 5, 7, 9) if k * f < SR * 0.45)
+    return x * adsr(d, 0.005, 0.1, 0.8, 0.05) * vel * 0.8
+
+
+def choir(notes, d, vel=1.0, a=1.5, formants=((750, 1.0, 140), (1200, 0.55, 160), (2600, 0.25, 260))):
+    """breathy vowel 'ah' pad: harmonics of each midi note weighted by formant bumps (centre Hz, gain, width) + vibrato.
+    Change formants for other vowels, e.g. 'oo' ((300, 1, 90), (870, 0.5, 120), (2240, 0.15, 200))."""
+    _midi(notes, 'choir')
+    t = tt(d)
+    x = np.zeros(len(t))
+    for j, m in enumerate(notes):
+        f0 = mtof(m)
+        vib = 1 + 0.004 * np.sin(2 * np.pi * (5.0 + 0.3 * j) * t + j)
+        ph = 2 * np.pi * f0 * np.cumsum(vib) / SR
+        for h in range(1, 40):
+            fh = f0 * h
+            if fh > 9000:
+                break
+            g = sum(A * np.exp(-((fh - Fm) / bw) ** 2) for Fm, A, bw in formants)
+            x += g * np.sin(h * ph + h * j)
+    br = filt(noise(d), 'band', [500, 3000]) * 0.02
+    return (x / max(1, len(notes)) * 0.5 + br) * adsr(d, min(a, d / 2), 0.3, 0.9, min(2.0, d / 2)) * vel
+
+
 # ---------------------------------------------------------------- mixing
 class Bus:
     def __init__(self, total_sec):
@@ -531,14 +593,53 @@ def click_rain(bus, events, base_gain=0.08, dens_ref=300.0, span=None):
         bus.add(clicks[j % 4], t, g0 * (0.5 + s), pan)
 
 
-def load_bgm(path, total_sec):
-    p = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', path, '-ar', str(SR), '-ac', '2', '-f', 's16le', '-'],
+def load_bgm(path, total_sec, offset=0.0):
+    """decode a music file to a stereo array of total_sec (+1 s pad). offset = seconds of the track to skip, e.g. to
+    start on an energetic section or to slide a breakdown / hit under a chosen scene."""
+    pre = ['-ss', f'{offset:.3f}'] if offset > 0 else []
+    p = subprocess.run(['ffmpeg', '-loglevel', 'error', *pre, '-i', path, '-ar', str(SR), '-ac', '2', '-f', 's16le', '-'],
                        capture_output=True)
     b = np.frombuffer(p.stdout, np.int16).reshape(-1, 2).astype(np.float64) / 32768
     out = np.zeros((int(total_sec * SR) + SR, 2))
     n = min(len(out), len(b))
     out[:n] = b[:n]
     return out
+
+
+def movavg(v, w):
+    """centred moving average of a 1-D array over w samples, O(n) via cumsum (np.convolve with a multi-second window
+    at 48 kHz takes minutes)"""
+    v = np.asarray(v, np.float64)
+    c = np.concatenate([[0.0], np.cumsum(v)])
+    i = np.arange(len(v))
+    lo, hi = np.clip(i - w // 2, 0, len(v)), np.clip(i + w // 2 + 1, 0, len(v))
+    return (c[hi] - c[lo]) / (hi - lo)
+
+
+def level(x, win=2.5, ratio=0.55, gmin=0.6, gmax=3.5):
+    """slow leveler for a whole mix (mono or stereo): gain = (mean RMS / local RMS) ** ratio over a `win`-second
+    window, clamped to [gmin, gmax] and smoothed over 0.5 s. ratio 0.5 roughly halves the dB gap between quiet and
+    loud passages so quiet stretches stay audible on phone speakers after loudness normalisation."""
+    st = x.ndim == 2
+    m = (x ** 2).mean(1) if st else x ** 2
+    rms = np.sqrt(movavg(m, int(win * SR)) + 1e-12)
+    ref = np.sqrt(m.mean())
+    g = movavg(np.clip((ref / rms) ** ratio, gmin, gmax), SR // 2)
+    return x * (g[:, None] if st else g)
+
+
+def automate(x, spans):
+    """hand-drawn gain automation (mono or stereo): spans = [(t0, t1, gain_db, ramp_s)] - hold gain_db between t0 and
+    t1 with smoothstep ramps of ramp_s outside them; overlapping spans multiply. Use it to pull the music almost out
+    for a sombre beat and bring it back on a cue. Apply AFTER level(), which would otherwise lift the dip back up."""
+    n = len(x)
+    tt_ = np.arange(n) / SR
+    g = np.ones(n)
+    for t0, t1, db, rp in spans:
+        rp = max(rp, 1e-3)
+        k = np.clip(np.minimum((tt_ - (t0 - rp)) / rp, ((t1 + rp) - tt_) / rp), 0, 1)
+        g *= 1 - (1 - 10 ** (db / 20)) * k * k * (3 - 2 * k)
+    return x * (g[:, None] if x.ndim == 2 else g)
 
 
 def duck(music, sfx, amount=1.2, speed_hz=3.0):

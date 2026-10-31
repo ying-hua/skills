@@ -1,11 +1,16 @@
 """vk_core - style-neutral 2D drawing core for procedural science videos (cairo + cv2 + PIL).
 
   Canvas      cairo base surface + half-res EMISSION surface (cv.g, additive) that gets bloomed in finish()
-  helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise
+  helpers     easing (ss, ease_out, ease_io, back_out), win() visibility windows, hrand() deterministic hash, fbm noise,
+              pnoise (fbm that tiles in x for equirect textures),
+  3D          Cam (look-at pinhole: proj points, per-pixel rays), ortho_project / ortho_lonlat / sample_equirect (globes)
+              splat_points (thousands of sub-pixel point lights into a numpy image)
   effects     tracer (glowing streak), muzzle (star flash + smoke), impact (dust burst + shock ring), dust_motes,
-              reticle, dashed_line, arrow_head, rrect, panel
-  text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing
-  post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder, chromatic aberration, vignette, grain
+              reticle, dashed_line, arrow_head, polyline (partial stroke-on), rrect, panel
+  text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
+              cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
+  compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
+  post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder (cv.shoulder), chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
 Frame size: set env VK_W / VK_H before importing (default 1920x1080; 1080x1920 for vertical).
@@ -103,6 +108,9 @@ class Canvas:
         self.grain = 1.0
         self.vignette = 1.0
         self.ca = 0.0             # chromatic aberration strength
+        self.shoulder = 1.2       # highlight roll-off above 0.85: output tops out near 1/shoulder (1.2 -> ~0.83 grey);
+        #                           lower it (e.g. 0.15) when a big area must read as true white (blazing sky, flash)
+        self.text_boxes = []      # [(text dict, ink box (x0, y0, x1, y1) px)] filled by finish()
 
     def both(self):
         return (self.c, self.g)
@@ -121,11 +129,13 @@ class Canvas:
             ctx.restore()
 
 
-_KEEP = []
+_KEEP = []          # per-frame temporaries: clear with _KEEP.clear() at the end of render_frame
+_PERSIST = []       # long-lived cached textures (persist=True): never cleared
 
 
-def to_surface(img):
-    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface (kept alive by attribute)"""
+def to_surface(img, persist=False):
+    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP (per-frame, clear it
+    after finish) or, with persist=True, in _PERSIST (for textures cached at import time and reused every frame)."""
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     a[..., 0] = np.clip(img[..., 2] * 255, 0, 255)
@@ -133,11 +143,11 @@ def to_surface(img):
     a[..., 2] = np.clip(img[..., 0] * 255, 0, 255)
     a[..., 3] = 255
     s = cairo.ImageSurface.create_for_data(memoryview(a), cairo.FORMAT_RGB24, w, h)
-    _KEEP.append(a)
+    (_PERSIST if persist else _KEEP).append(a)
     return s
 
 
-def to_surface_rgba(img, alpha):
+def to_surface_rgba(img, alpha, persist=False):
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     al = np.clip(alpha, 0, 1)
@@ -146,7 +156,7 @@ def to_surface_rgba(img, alpha):
     a[..., 2] = np.clip(img[..., 0] * al * 255, 0, 255)
     a[..., 3] = np.clip(al * 255, 0, 255)
     s = cairo.ImageSurface.create_for_data(memoryview(a), cairo.FORMAT_ARGB32, w, h)
-    _KEEP.append(a)
+    (_PERSIST if persist else _KEEP).append(a)
     return s
 
 
@@ -163,6 +173,28 @@ def paint_img(ctx, surf, x=0, y=0, alpha=1.0, scale=1.0):
     ctx.restore()
 
 
+def splat_points(img, xs, ys, flux, col=(1.0, 1.0, 1.0), sigma=0.8):
+    """add many point lights (stars, sparks, particles) to a float HxWx3 image in place: sub-pixel bilinear deposit
+    (no 1 px jitter when they drift slowly) then a Gaussian blur of `sigma` px for a round core. flux: scalar or
+    per-point array. Thousands of points cost about one blur - far cheaper than one cairo arc each."""
+    h, w = img.shape[:2]
+    xs, ys = np.asarray(xs, np.float64), np.asarray(ys, np.float64)
+    f = np.broadcast_to(np.asarray(flux, np.float32), xs.shape)
+    x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
+    ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
+    x0, y0, f = x0[ok], y0[ok], f[ok]
+    fx, fy = (xs[ok] - x0).astype(np.float32), (ys[ok] - y0).astype(np.float32)
+    acc = np.zeros((h, w), np.float32)
+    np.add.at(acc, (y0, x0), f * (1 - fx) * (1 - fy))
+    np.add.at(acc, (y0, x0 + 1), f * fx * (1 - fy))
+    np.add.at(acc, (y0 + 1, x0), f * (1 - fx) * fy)
+    np.add.at(acc, (y0 + 1, x0 + 1), f * fx * fy)
+    if sigma > 0:
+        acc = cv2.GaussianBlur(acc, (0, 0), sigma)
+    img += acc[..., None] * np.asarray(col, np.float32)
+    return img
+
+
 # ---------------------------------------------------------------- noise
 def fbm(h, w, seed=0, octaves=6, base=4, persist=0.55):
     rng = np.random.default_rng(seed)
@@ -175,6 +207,101 @@ def fbm(h, w, seed=0, octaves=6, base=4, persist=0.55):
         tot += amp
         amp *= persist
     return out / tot
+
+
+def pnoise(h, w, seed=0, octaves=5, base=4, persist=0.55):
+    """fbm that tiles in x (left edge continues the right edge), normalised to 0..1. Use it for equirect (lon x lat)
+    textures wrapped on a sphere - plain fbm leaves a visible seam at lon = +-180. Detail still pinches toward the
+    poles of a sphere; fade it out above ~75 deg latitude."""
+    rng = np.random.default_rng(seed)
+    out = np.zeros((h, w), np.float32)
+    amp, tot = 1.0, 0.0
+    for o in range(octaves):
+        gw = base * 2 ** o
+        gh = max(2, int(round(gw * h / w)))
+        g = rng.random((gh + 3, gw + 3)).astype(np.float32)
+        g[:, -3:] = g[:, :3]
+        big = cv2.resize(g, (int(w * (gw + 3) / gw), int(h * (gh + 3) / gh)), interpolation=cv2.INTER_CUBIC)
+        ox, oy = int(w / gw), int(h / gh)
+        out += amp * big[oy:oy + h, ox:ox + w]
+        tot += amp
+        amp *= persist
+    out -= out.min()
+    return out / max(1e-6, out.max())
+
+
+# ---------------------------------------------------------------- 3D pinhole camera (cairo / numpy scenes)
+class Cam:
+    """look-at pinhole camera for drawing 3D scenes with cairo/numpy (y up). proj() maps points to screen pixels,
+    rays() gives per-pixel view directions for ray casting backgrounds (e.g. the inside of a sphere) on a grid of any
+    size (render at half res and upscale)."""
+
+    def __init__(self, pos, target, fov=60.0, roll=0.0, w=None, h=None):
+        self.p = np.asarray(pos, np.float64)
+        f = np.asarray(target, np.float64) - self.p
+        f /= np.linalg.norm(f)
+        r = np.cross(f, [0.0, 1.0, 0.0])
+        if np.linalg.norm(r) < 1e-6:          # looking straight up/down: pick any right vector
+            r = np.array([1.0, 0.0, 0.0])
+        r /= np.linalg.norm(r)
+        u = np.cross(r, f)
+        if roll:
+            cr, sr = math.cos(roll), math.sin(roll)
+            r, u = r * cr + u * sr, -r * sr + u * cr
+        self.r, self.u, self.f = r, u, f
+        self.w, self.h = w or W, h or H
+        self.foc = (self.w / 2) / math.tan(math.radians(fov) / 2)     # horizontal fov in degrees
+
+    def proj(self, P):
+        """P (..., 3) -> (sx, sy, depth); depth <= 0 means behind the camera (cull those)"""
+        d = np.asarray(P, np.float64) - self.p
+        x, y, z = d @ self.r, d @ self.u, d @ self.f
+        zz = np.where(z > 1e-3, z, 1e-3)
+        return self.w / 2 + self.foc * x / zz, self.h / 2 - self.foc * y / zz, z
+
+    def rays(self, w, h):
+        """unit view directions (h, w, 3) float32 for a w x h pixel grid covering the frame"""
+        foc = self.foc * w / self.w
+        X, Y = np.meshgrid((np.arange(w, dtype=np.float32) + 0.5 - w / 2) / foc,
+                           -(np.arange(h, dtype=np.float32) + 0.5 - h / 2) / foc)
+        d = X[..., None] * self.r.astype(np.float32) + Y[..., None] * self.u.astype(np.float32) +             self.f.astype(np.float32)
+        return d / np.linalg.norm(d, axis=-1, keepdims=True)
+
+
+# ---------------------------------------------------------------- orthographic globe from an equirect texture
+def ortho_project(lon, lat, lon0, lat0):
+    """(deg) -> unit-disc x (east), y (north, up), z (> 0 on the visible hemisphere) for a globe centred on
+    (lon0, lat0). Screen point: (cx + x * r, cy - y * r)."""
+    lam = np.radians(np.asarray(lon, np.float64) - lon0)
+    ph = np.radians(np.asarray(lat, np.float64))
+    X, Y, Z = np.cos(ph) * np.cos(lam), np.cos(ph) * np.sin(lam), np.sin(ph)
+    cl, sl = math.cos(math.radians(lat0)), math.sin(math.radians(lat0))
+    return Y, -X * sl + Z * cl, X * cl + Z * sl
+
+
+def ortho_lonlat(cx, cy, r, lon0, lat0, box=None, step=1):
+    """inverse of ortho_project for every screen pixel in box=(x0, y0, x1, y1) (default: the disc's bounding box
+    clipped to the frame). Returns lon, lat (deg), inside-disc mask, z (1 at the centre, 0 at the limb) and the
+    box used - feed lon/lat to sample_equirect() and shade with z."""
+    if box is None:
+        box = (max(0, int(cx - r - 2)), max(0, int(cy - r - 2)), min(W, int(cx + r + 2)), min(H, int(cy + r + 2)))
+    x0, y0, x1, y1 = box
+    X, Y = np.meshgrid(np.arange(x0, x1, step, dtype=np.float32) + 0.5, np.arange(y0, y1, step, dtype=np.float32) + 0.5)
+    nx, ny = (X - cx) / r, -(Y - cy) / r
+    rr = nx * nx + ny * ny
+    z = np.sqrt(np.clip(1 - rr, 0, 1))
+    cl, sl = math.cos(math.radians(lat0)), math.sin(math.radians(lat0))
+    lon = (np.degrees(np.arctan2(nx, z * cl - ny * sl)) + lon0 + 180) % 360 - 180
+    lat = np.degrees(np.arcsin(np.clip(z * sl + ny * cl, -1, 1)))
+    return lon, lat, rr < 1, z, box
+
+
+def sample_equirect(tex, lon, lat):
+    """bilinear lookup of an equirect texture (rows = 90..-90 lat, cols = -180..180 lon) that wraps in longitude"""
+    th, tw = tex.shape[:2]
+    mx = ((np.asarray(lon) + 180) / 360 * tw - 0.5).astype(np.float32)
+    my = ((90 - np.asarray(lat)) / 180 * th - 0.5).astype(np.float32)
+    return cv2.remap(tex, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
 
 
 # ---------------------------------------------------------------- generic effects
@@ -346,6 +473,32 @@ def arrow_head(ctx, p, ang, size, col, alpha=1.0):
     ctx.restore()
 
 
+def polyline(ctx, pts, close=True, frac=1.0):
+    """add a polyline path (call stroke()/fill() yourself). frac < 1 traces only that share of the total length - a
+    'drawn on' outline (stick in sand, brush, pen). Starts with new_path(): after show_text() cairo keeps a current
+    point, and the first segment would otherwise be joined to it."""
+    ctx.new_path()
+    if len(pts) < 2 or frac <= 0:
+        return
+    P = list(pts) + ([pts[0]] if close else [])
+    if frac >= 1:
+        ctx.move_to(*P[0])
+        for p in P[1:-1] if close else P[1:]:
+            ctx.line_to(*p)
+        if close:
+            ctx.close_path()
+        return
+    segs = [math.dist(P[i], P[i + 1]) for i in range(len(P) - 1)]
+    L = sum(segs) * frac
+    ctx.move_to(*P[0])
+    for i, s in enumerate(segs):
+        if L <= 0:
+            break
+        u = min(1.0, L / s) if s > 0 else 1.0
+        ctx.line_to(P[i][0] + (P[i + 1][0] - P[i][0]) * u, P[i][1] + (P[i + 1][1] - P[i][1]) * u)
+        L -= s
+
+
 def rrect(ctx, x, y, w, h, r):
     ctx.new_sub_path()
     ctx.arc(x + w - r, y + r, r, -TAU / 4, 0)
@@ -432,12 +585,91 @@ def _font(path, size, weight):
     return f
 
 
-def _font_for(ch, size, weight, sans, font=None):
+@functools.lru_cache(4096)
+def has_glyph(path, ch):
+    """does the font at `path` contain a real glyph for ch? (a missing one renders the .notdef 'tofu' box)"""
+    if ch.isspace():
+        return True
+    f = _font(path, 32, 400)
+    probe = f.getmask(ch)
+    tofu = f.getmask('􏿽')
+    return not (probe.size == tofu.size and bytes(probe) == bytes(tofu))
+
+
+SYMBOL_FALLBACK = ['C:/Windows/Fonts/seguisym.ttf', 'C:/Windows/Fonts/cambria.ttc', 'C:/Windows/Fonts/segoeui.ttf',
+                   'C:/Windows/Fonts/arial.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+                   '/System/Library/Fonts/Supplemental/Arial Unicode.ttf']
+
+
+@functools.lru_cache(8192)
+def _font_choice(ch, size, weight, sans, font=None):
+    """(path, size, weight) of the first font in the chain that really has ch: font override -> latin/CJK default
+    (script order) -> the other default -> SYMBOL_FALLBACK. None if nothing has it."""
+    lat = (FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
+    cjk = (FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+    order = [lat, cjk] if (ord(ch) < 0x2000 and ch not in '·×—…') else [cjk, lat]
     if font:
-        return _font(font, size, weight)
-    if ord(ch) < 0x2000 and ch not in '·×—…':
-        return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
-    return _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+        order.insert(0, (font, size, weight))
+    order += [(p, size, 400) for p in SYMBOL_FALLBACK if os.path.exists(p)]
+    for c in order:
+        try:
+            if has_glyph(c[0], ch):
+                return c
+        except OSError:
+            continue
+    return None
+
+
+def _font_for(ch, size, weight, sans, font=None):
+    c = _font_choice(ch, size, weight, sans, font)
+    if c is None:          # nothing has it: keep the old behaviour (tofu from the primary font)
+        if font:
+            return _font(font, size, weight)
+        if ord(ch) < 0x2000 and ch not in '·×—…':
+            return _font(FONT_LAT if weight >= 700 else FONT_LAT2, size * LAT_SCALE, 0)
+        return _font(FONT_CJK_SANS if sans else FONT_CJK, size, weight)
+    return _font(*c)
+
+
+@functools.lru_cache(64)
+def math_img(tex, size, color=(1.0, 1.0, 1.0), fontset='stix'):
+    """render a LaTeX-subset formula (matplotlib mathtext, no TeX install needed) on a transparent background
+    -> (rgb float (h,w,3), alpha (h,w)). size = font size in px (same scale as add_text); tex without the $...$."""
+    import io as _io
+    import matplotlib
+    matplotlib.use('Agg')
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    fig = Figure(figsize=(1, 1), dpi=100)
+    FigureCanvasAgg(fig)
+    fig.text(0, 0, f'${tex}$', fontsize=size * 0.72, color=tuple(color), math_fontfamily=fontset)
+    buf = _io.BytesIO()
+    fig.savefig(buf, dpi=100, format='png', transparent=True, bbox_inches='tight', pad_inches=0.06)
+    buf.seek(0)
+    im = np.asarray(Image.open(buf).convert('RGBA'), np.float32) / 255.0
+    a = np.ascontiguousarray(im[..., 3])
+    rgb = np.empty(im.shape[:2] + (3,), np.float32)
+    rgb[:] = np.array(color, np.float32)          # flat ink colour; coverage lives in alpha
+    return rgb, a
+
+
+def add_math(cv, tex, x, y, size=48, color=None, alpha=1.0, anchor='m', glow=0.0, fontset='stix'):
+    """paint a formula with real sub/superscripts, fractions and roots onto the base layer, centred at (x, y)
+    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order."""
+    if alpha <= 0.004:
+        return
+    rgb, a = math_img(tex, int(size), tuple(color or CREAM), fontset)
+    h, w = a.shape
+    x0 = x - (w / 2 if anchor == 'm' else (w if anchor == 'r' else 0))
+    paint_img(cv.c, to_surface_rgba(rgb, a), x0, y - h / 2, alpha=alpha)
+    if glow > 0:
+        paint_img(cv.g, to_surface_rgba(rgb * glow, a), x0, y - h / 2, alpha=alpha)
+
+
+def missing_glyphs(markup, weight=800, sans=False, font=None):
+    """characters of a markup string that no font in the fallback chain can draw (they would show as tofu boxes)"""
+    return sorted({ch for ch, _ in parse(markup, CREAM) if not ch.isspace()
+                   and _font_choice(ch, 48, weight, sans, font) is None})
 
 
 @functools.lru_cache(8192)
@@ -563,6 +795,44 @@ def _render_text(img, d):
         region += gb * d['glow'] * A
     m = (sa * A)[..., None]
     region[:] = region * (1 - m) + scc * m
+    ys, xs = np.nonzero(m[..., 0] > 0.02)
+    if len(ys):
+        return (fx0 + int(xs.min()), fy0 + int(ys.min()), fx0 + int(xs.max()) + 1, fy0 + int(ys.max()) + 1)
+    return None
+
+
+def text_in_zones(cv, zones):
+    """Call after finish(cv). zones = [(x0, y0, x1, y1)] as fractions of the frame (e.g. a cover's top-left corner
+    (0, 0, 0.5, 0.25) that a platform badge will cover). Returns [(markup, box_px, zone)] for every text whose ink
+    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted)."""
+    hits = []
+    for d, b in cv.text_boxes:
+        for z in zones:
+            zx0, zy0, zx1, zy1 = z[0] * W, z[1] * H, z[2] * W, z[3] * H
+            if b[0] < zx1 and b[2] > zx0 and b[1] < zy1 and b[3] > zy0:
+                hits.append((d['markup'], b, z))
+    return hits
+
+
+def group(cv, fn, a):
+    """draw fn(cv) on both layers (base + glow) as one group and composite it with alpha a; texts queued by fn get
+    their alpha scaled too. Use for whole-scene cross-fades / fading a sub-scene in over another without the
+    double-exposure look of fading each element separately."""
+    if a <= 0.003:
+        return
+    if a >= 0.997:
+        fn(cv)
+        return
+    n0 = len(cv.texts)
+    cv.c.push_group()
+    cv.g.push_group()
+    fn(cv)
+    cv.g.pop_group_to_source()
+    cv.g.paint_with_alpha(a)
+    cv.c.pop_group_to_source()
+    cv.c.paint_with_alpha(a)
+    for d in cv.texts[n0:]:
+        d['alpha'] *= a
 
 
 # ---------------------------------------------------------------- post
@@ -590,12 +860,15 @@ def finish(cv, frame_idx=0):
                         (W // 2, H // 2), interpolation=cv2.INTER_LINEAR)
         b = b + b2 * 0.7
         img += cv2.resize(b, (W, H), interpolation=cv2.INTER_LINEAR)
+    cv.text_boxes = []
     for d in cv.texts:
-        _render_text(img, d)
+        b = _render_text(img, d)
+        if b:
+            cv.text_boxes.append((d, b))
     if cv.flash > 0:
         img += np.array([1.0, 0.85, 0.6], np.float32) * cv.flash
     # tone: soft shoulder
-    img = img / (1 + np.maximum(img - 0.85, 0) * 1.2)
+    img = img / (1 + np.maximum(img - 0.85, 0) * cv.shoulder)
     if cv.ca > 0:
         sft = int(cv.ca)
         img[..., 0] = np.roll(img[..., 0], sft, 1)

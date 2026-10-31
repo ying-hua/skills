@@ -3,6 +3,7 @@ Contract used by vk_render: TOTAL, render_frame(t, idx). Audio cues are collecte
 """
 import math, bisect
 import numpy as np
+import vk_core
 from vk_core import *          # Canvas, add_text, finish, easing, effects ...
 
 # ---- project constants ----
@@ -39,9 +40,13 @@ def background(cv):
 
 class Section:
     name, dur, cues = '', 1.0, []      # cues: [(local_t, sfx_name, gain, pan)]
+    xin = 0.0                          # seconds of cross-fade from the previous section (0 = hard cut)
 
     def draw(self, cv, t):
-        pass
+        pass                           # may be called with t > dur while the next section fades in
+
+    def post(self, img, t):
+        return img                     # per-section full-frame effect on the finished uint8 frame (scanlines, squash...)
 
 
 class Hook(Section):
@@ -73,15 +78,26 @@ TOTAL = float(sum(s.dur for s in SECTIONS))
 
 def locate(t):
     i = max(0, bisect.bisect_right(STARTS, t) - 1)
-    return SECTIONS[i], t - STARTS[i]
+    return i, t - STARTS[i]
 
 
 def all_cues():
     return [(t0 + tl, n, g, p) for s, t0 in zip(SECTIONS, STARTS) for (tl, n, g, p) in s.cues]
 
 
-def render_frame(t, idx=0):
-    sec, tl = locate(t)
+def _one(sec, tl, idx):
     cv = Canvas()
     sec.draw(cv, tl)
-    return finish(cv, idx)
+    return sec.post(finish(cv, idx), tl)
+
+
+def render_frame(t, idx=0):
+    i, tl = locate(t)
+    sec = SECTIONS[i]
+    img = _one(sec, tl, idx)
+    if i > 0 and tl < sec.xin:          # whole-frame cross-fade: the previous section keeps running past its end
+        prev = SECTIONS[i - 1]
+        a = ease_io(tl / sec.xin)
+        img = (img * a + _one(prev, prev.dur + tl, idx) * (1 - a) + 0.5).astype(np.uint8)
+    vk_core._KEEP.clear()               # per-frame to_surface buffers (see references/pitfalls.md)
+    return img
