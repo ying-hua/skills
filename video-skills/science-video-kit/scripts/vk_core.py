@@ -10,6 +10,8 @@
   text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
               cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
   compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
+  2.5D        tilt_homography + warp_layer(cv, draw, lw, lh, Hm): a flat scene laid on a tilted table (both layers)
+  world text  world_text(ctx, ...): cairo toy-font latin labels that follow camera transforms and warps
   post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder (cv.shoulder), chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
@@ -833,6 +835,80 @@ def group(cv, fn, a):
     cv.c.paint_with_alpha(a)
     for d in cv.texts[n0:]:
         d['alpha'] *= a
+
+
+def world_text(ctx, s, x, y, size, col, alpha=1.0, face='Consolas', bold=True, anchor='m', italic=False):
+    """draw latin text straight onto a cairo context (cairo toy font by family name, e.g. 'Consolas', 'Georgia').
+    Unlike add_text it follows set_cam / ctx transforms and perspective-warped layers, and is cheap enough for
+    hundreds of labels per frame (dials, tables, ciphertext). y = vertical centre of capitals. No CJK shaping:
+    keep Chinese in add_text. Ends with new_path() so the next arc() is not joined to the text."""
+    if alpha <= 0.003:
+        return
+    ctx.select_font_face(face, cairo.FONT_SLANT_ITALIC if italic else cairo.FONT_SLANT_NORMAL,
+                         cairo.FONT_WEIGHT_BOLD if bold else cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(size)
+    adv = ctx.text_extents(s).x_advance
+    x0 = x - adv / 2 if anchor == 'm' else (x - adv if anchor == 'r' else x)
+    ctx.move_to(x0, y + size * 0.36)
+    ctx.set_source_rgba(*col, alpha)
+    ctx.show_text(s)
+    ctx.new_path()
+
+
+def tilt_homography(lw, lh, zoom=1.0, tilt=0.5, cx=None, cy=None, roll=0.0, sx=None, sy=None, scale=1.0, D=2200.0):
+    """3x3 homography that lays a flat layer (lw x lh layer px, drawn at `scale` px per unit) on a table tilted back
+    by `tilt` radians (far edge = top), seen by a pinhole camera: layer point (cx, cy) (units) lands on screen (sx, sy),
+    zoom ~ screen px per unit at that point, roll rotates the shot. Use with warp_layer."""
+    cx = lw / 2 if cx is None else cx
+    cy = lh / 2 if cy is None else cy
+    sx = W / 2 if sx is None else sx
+    sy = H / 2 if sy is None else sy
+    f = D * zoom
+    ca, sa, cr, sr = math.cos(tilt), math.sin(tilt), math.cos(roll), math.sin(roll)
+
+    def proj(u, v):
+        X, Y = u - cx, v - cy
+        z = D - Y * sa
+        px, py = f * X / z, f * Y * ca / z
+        return sx + px * cr - py * sr, sy + px * sr + py * cr
+
+    src = np.float32([[0, 0], [lw * scale, 0], [lw * scale, lh * scale], [0, lh * scale]])
+    dst = np.float32([proj(0, 0), proj(lw, 0), proj(lw, lh), proj(0, lh)])
+    return cv2.getPerspectiveTransform(src, dst)
+
+
+def _paint_warped(ctx, arr, Hm, ow, oh, alpha):
+    out = np.ascontiguousarray(cv2.warpPerspective(arr, Hm, (ow, oh), flags=cv2.INTER_LINEAR))
+    _KEEP.append(out)
+    s = cairo.ImageSurface.create_for_data(memoryview(out), cairo.FORMAT_ARGB32, ow, oh)
+    ctx.save()
+    ctx.identity_matrix()
+    ctx.set_source_surface(s, 0, 0)
+    ctx.paint_with_alpha(alpha)
+    ctx.restore()
+
+
+def warp_layer(cv, draw, lw, lh, Hm, alpha=1.0, scale=1.0):
+    """perspective 2.5D: draw(c, g) paints a flat scene (a machine, a board, a map) in layer units 0..lw x 0..lh on a
+    transparent base context c and a half-res additive glow context g; both are warped by Hm (tilt_homography) onto
+    cv.c and cv.g, so lamps on the tilted object still bloom. scale = layer px per unit (raise it for close-ups so
+    the texture is not magnified; ~0.05 s per 2000 px layer). Clear _KEEP per frame as usual."""
+    w, h = int(lw * scale), int(lh * scale)
+    sb = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    sg = cairo.ImageSurface(cairo.FORMAT_ARGB32, w // 2, h // 2)
+    c, g = cairo.Context(sb), cairo.Context(sg)
+    c.scale(scale, scale)
+    g.scale(scale / 2, scale / 2)
+    for x in (c, g):
+        x.set_line_cap(cairo.LINE_CAP_ROUND)
+        x.set_line_join(cairo.LINE_JOIN_ROUND)
+    g.set_operator(cairo.OPERATOR_ADD)
+    draw(c, g)
+    for s_ in (sb, sg):
+        s_.flush()
+    _paint_warped(cv.c, np.ndarray((h, w, 4), np.uint8, sb.get_data()), Hm, W, H, alpha)
+    H2 = np.diag([0.5, 0.5, 1.0]) @ Hm @ np.diag([2.0, 2.0, 1.0])
+    _paint_warped(cv.g, np.ndarray((h // 2, w // 2, 4), np.uint8, sg.get_data()), H2, W // 2, H // 2, alpha)
 
 
 # ---------------------------------------------------------------- post

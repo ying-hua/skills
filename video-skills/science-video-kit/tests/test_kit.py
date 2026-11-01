@@ -331,6 +331,52 @@ class SpectralTests(unittest.TestCase):
         self.assertTrue(np.allclose(V.srgb_to_linear(V.linear_to_srgb([0.2, 0.5, 0.9])), [0.2, 0.5, 0.9]))
 
 
+class WarpAndWhineTests(unittest.TestCase):
+    def test_warp_layer_puts_a_tilted_plane_and_its_glow_on_screen(self):
+        import vk_core as V
+        cv = V.Canvas()
+
+        def draw(c, g):
+            c.rectangle(0, 0, 400, 300)
+            c.set_source_rgb(0.8, 0.8, 0.8)
+            c.fill()
+            V.world_text(c, 'AQZ', 200, 150, 60, (0.1, 0.1, 0.1))
+            g.arc(200, 60, 30, 0, V.TAU)
+            g.set_source_rgb(1, 0.6, 0.2)
+            g.fill()
+
+        Hm = V.tilt_homography(400, 300, zoom=1.5, tilt=0.6)
+        V.warp_layer(cv, draw, 400, 300, Hm)
+        img = V.finish(cv, 0)
+        V._KEEP.clear()
+        top = np.nonzero(img[:, V.W // 2].max(1) > 150)[0]
+        self.assertTrue(len(top) > 100)
+        rows = [np.count_nonzero(img[y, :, 1] > 150) for y in (top[3], top[-4])]
+        self.assertLess(rows[0], rows[1])            # far (top) edge is narrower than the near edge
+
+    def test_whine_flags_a_sustained_high_tone_not_clicks(self):
+        if not has_ffmpeg():
+            self.skipTest('ffmpeg missing')
+        import vk_audio as A, vk_scan
+        from scipy.io import wavfile
+        d = tempfile.mkdtemp()
+        t = np.arange(8 * A.SR) / A.SR
+        x = 0.02 * np.random.default_rng(0).standard_normal(len(t))
+        x[2 * A.SR:7 * A.SR] += 0.2 * np.sin(2 * np.pi * 3500 * t[2 * A.SR:7 * A.SR])
+        wavfile.write(os.path.join(d, 'w.wav'), A.SR, (x * 32767).astype(np.int16))
+        clicks = np.zeros(8 * A.SR)
+        for k in range(40):
+            c = A.tick()
+            clicks[k * 9000:k * 9000 + len(c)] += c
+        wavfile.write(os.path.join(d, 'c.wav'), A.SR, (clicks * 0.5 * 32767).astype(np.int16))
+        with contextlib.redirect_stdout(io.StringIO()):
+            r1 = vk_scan.whine(os.path.join(d, 'w.wav'))
+            r2 = vk_scan.whine(os.path.join(d, 'c.wav'))
+        self.assertEqual(len(r1), 1)
+        self.assertAlmostEqual(np.mean([f for _, f in r1[0]]), 3500, delta=60)
+        self.assertEqual(r2, [])
+
+
 class GLTests(unittest.TestCase):
     def test_gl_render_and_nan_guard(self):
         try:

@@ -2,6 +2,7 @@
   python vk_scan.py spikes out/chunks/c0*.mp4     single-frame flicker / black-block (NaN bloom) detector
   python vk_scan.py levels out/final.mp4          mean luma per second (accidental black-outs / white-outs)
   python vk_scan.py sheet out/final.mp4 0,1,17,64 [out/final_sheet.png]   small contact sheet of the deliverable
+  python vk_scan.py whine out/sfx.wav [--fmin 2500 --secs 3]     sustained high narrowband tones (shrill whistles)
 Large 'maxdiff' alone is normal at hard cuts and flashes; investigate 'spikes' and 'blocks'.
 """
 import subprocess, sys
@@ -61,6 +62,38 @@ def levels(f):
     print(' '.join(f'{i}:{m[int(i * fps):int((i + 1) * fps)].mean():.0f}' for i in range(int(len(m) / fps))))
 
 
+def whine(f, fmin=2500.0, secs=3, share=0.05):
+    """flag runs of >= secs seconds where one narrow band above fmin carries >= share of the second's energy and
+    stays within ~1/3 semitone - the sustained shrill tone (pad fed Hz, high sine bed, feedback whistle) that
+    per-second RMS cannot see. Check the SFX/score bus alone; a supplied song can trip it by design."""
+    from scipy.signal import stft
+    p = subprocess.run(['ffmpeg', '-loglevel', 'error', '-i', f, '-ac', '1', '-ar', '32000', '-f', 'f32le', '-'],
+                       capture_output=True)
+    x = np.frombuffer(p.stdout, np.float32).astype(np.float64)
+    fr, tm, Z = stft(x, 32000, nperseg=4096, noverlap=2048)
+    pw = np.abs(Z) ** 2
+    hi = fr >= fmin
+    runs, cur, prev = [], [], None
+    for s in range(int(len(x) / 32000)):
+        ps = pw[:, (tm >= s) & (tm < s + 1)].mean(1)
+        tot = ps.sum() + 1e-15
+        i = int(np.argmax(np.where(hi, ps, 0)))
+        ok = ps[i] / tot >= share and tot > 1e-9
+        if ok and prev is not None and abs(np.log2(fr[i] / prev)) < 1 / 36:
+            cur.append((s, fr[i]))
+        else:
+            if len(cur) >= secs:
+                runs.append(cur)
+            cur = [(s, fr[i])] if ok else []
+        prev = fr[i] if ok else None
+    if len(cur) >= secs:
+        runs.append(cur)
+    for r in runs:
+        print(f'WHINE {r[0][0]}-{r[-1][0] + 1}s  ~{np.mean([q for _, q in r]):.0f} Hz')
+    print('SUSTAINED HIGH TONES:', len(runs))
+    return runs
+
+
 def sheet(f, ts, out):
     from PIL import Image
     ims = []
@@ -80,6 +113,10 @@ if __name__ == '__main__':
         spikes(sys.argv[2:])
     elif c == 'levels':
         levels(sys.argv[2])
+    elif c == 'whine':
+        a = sys.argv[2:]
+        kw = {k[2:]: float(v) for k, v in zip(a[1::2], a[2::2])}
+        whine(a[0], kw.get('fmin', 2500.0), int(kw.get('secs', 3)))
     elif c == 'sheet':
         sheet(sys.argv[2], [float(x) for x in sys.argv[3].split(',')],
               sys.argv[4] if len(sys.argv) > 4 else 'out/final_sheet.png')
