@@ -64,6 +64,18 @@ def filt(x, kind, f, order=2):
     return sosfilt(butter(order, f, kind, fs=SR, output='sos'), x)
 
 
+def fade_io(x, a=0.3, r=0.6):
+    """sine-squared fade in over a s and cosine-squared fade out over r s (mono or stereo). Beds, drones and noise
+    layers cut hard at their ends click or thump; fade both ends."""
+    n = len(x)
+    e = np.ones(n)
+    na, nr = min(n, int(a * SR)), min(n, int(r * SR))
+    e[:na] = np.sin(np.linspace(0, np.pi / 2, na)) ** 2
+    if nr:
+        e[n - nr:] *= np.cos(np.linspace(0, np.pi / 2, nr)) ** 2
+    return x * (e[:, None] if np.ndim(x) == 2 else e)
+
+
 def P(*xs):
     """sum arrays of different lengths (avoids the classic broadcast error)"""
     out = np.zeros(max(len(x) for x in xs))
@@ -365,10 +377,11 @@ def flow_bed(d=30.0):
     return norm(filt(noise(d), 'band', [300, 2500]) * (0.3 + 0.3 * mod) * e, 0.18)
 
 
-def sparkle(d=1.2, n=18):
+def sparkle(d=1.2, n=18, lo=3000.0, hi=7000.0):
+    """n short sine glints at random times; lower lo/hi (e.g. 1200-2600) for a softer, less piercing shimmer"""
     out = np.zeros(int(d * SR))
     for k in range(n):
-        f = rng.uniform(3000, 7000)
+        f = rng.uniform(lo, hi)
         b = np.sin(2 * np.pi * f * tt(0.15)) * env(0.15, 0.001, 30)
         i = int(rng.uniform(0, d - 0.15) * SR)
         out[i:i + len(b)] += b * rng.uniform(0.3, 1)

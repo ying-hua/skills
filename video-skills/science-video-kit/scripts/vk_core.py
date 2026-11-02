@@ -186,11 +186,13 @@ def splat_points(img, xs, ys, flux, col=(1.0, 1.0, 1.0), sigma=0.8):
     ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
     x0, y0, f = x0[ok], y0[ok], f[ok]
     fx, fy = (xs[ok] - x0).astype(np.float32), (ys[ok] - y0).astype(np.float32)
-    acc = np.zeros((h, w), np.float32)
-    np.add.at(acc, (y0, x0), f * (1 - fx) * (1 - fy))
-    np.add.at(acc, (y0, x0 + 1), f * fx * (1 - fy))
-    np.add.at(acc, (y0 + 1, x0), f * (1 - fx) * fy)
-    np.add.at(acc, (y0 + 1, x0 + 1), f * fx * fy)
+    # np.bincount on flat indices: same sums as np.add.at, roughly 10x faster for 1e5+ points
+    base = y0.astype(np.int64) * w + x0
+    acc = np.bincount(base, f * (1 - fx) * (1 - fy), h * w)
+    acc += np.bincount(base + 1, f * fx * (1 - fy), h * w)
+    acc += np.bincount(base + w, f * (1 - fx) * fy, h * w)
+    acc += np.bincount(base + w + 1, f * fx * fy, h * w)
+    acc = acc.reshape(h, w).astype(np.float32)
     if sigma > 0:
         acc = cv2.GaussianBlur(acc, (0, 0), sigma)
     img += acc[..., None] * np.asarray(col, np.float32)
@@ -230,6 +232,33 @@ def pnoise(h, w, seed=0, octaves=5, base=4, persist=0.55):
         amp *= persist
     out -= out.min()
     return out / max(1e-6, out.max())
+
+
+def worley(h, w, spacing, seed=0, jitter=0.9, tile=True, labels=False):
+    """cellular (Worley) noise: distance to the nearest of ~(h/spacing)*(w/spacing) jittered seeds, divided by
+    `spacing` (0 at a seed, ~0.5-0.7 on cell borders). 1 - d gives bright cells with dark lanes (solar granulation,
+    plant cells, foam, scales); edges of `labels` give cell walls. tile=True puts the seeds on a torus so the texture
+    repeats seamlessly (EXTEND_REPEAT, cv2.BORDER_WRAP, scrolling ground planes) - a plain distance transform leaves a
+    hard seam where the texture wraps. labels=True also returns the per-pixel id of the nearest seed."""
+    rng = np.random.default_rng(seed)
+    ny, nx = max(1, int(round(h / spacing))), max(1, int(round(w / spacing)))
+    m = np.full((h, w), 255, np.uint8)
+    for i in range(ny):
+        for j in range(nx):
+            y = int((i + 0.5 + rng.uniform(-jitter, jitter) / 2) * h / ny) % h
+            x = int((j + 0.5 + rng.uniform(-jitter, jitter) / 2) * w / nx) % w
+            m[y, x] = 0
+    src = np.tile(m, (3, 3)) if tile else m
+    d, lab = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    # every seed pixel has its own label; map labels to one id per seed (the 9 tiled copies share it)
+    ys, xs = np.nonzero(src == 0)
+    ids = np.zeros(int(lab.max()) + 1, np.int64)
+    ids[lab[ys, xs]] = (ys % h) * w + (xs % w)
+    lab = ids[lab]
+    if tile:
+        d, lab = d[h:2 * h, w:2 * w], lab[h:2 * h, w:2 * w]
+    d = (d / spacing).astype(np.float32)
+    return (d, lab) if labels else d
 
 
 # ---------------------------------------------------------------- 3D pinhole camera (cairo / numpy scenes)

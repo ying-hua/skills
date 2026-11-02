@@ -15,6 +15,41 @@ def has_ffmpeg():
 
 
 class CoreTests(unittest.TestCase):
+    def test_splat_points_matches_add_at(self):
+        import vk_core as V
+        r = np.random.default_rng(3)
+        xs, ys, f = r.uniform(-5, 205, 5000), r.uniform(-5, 105, 5000), r.uniform(0, 2, 5000)
+        img = np.zeros((100, 200, 3), np.float32)
+        V.splat_points(img, xs, ys, f, sigma=0)
+        ref = np.zeros((100, 200), np.float64)
+        x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
+        ok = (x0 >= 0) & (y0 >= 0) & (x0 < 199) & (y0 < 99)
+        x0, y0, ff, fx, fy = x0[ok], y0[ok], f[ok], (xs - np.floor(xs))[ok], (ys - np.floor(ys))[ok]
+        for dx, dy, wgt in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)), (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+            np.add.at(ref, (y0 + dy, x0 + dx), ff * wgt)
+        self.assertLess(np.abs(img[..., 0] - ref).max(), 1e-3)
+
+    def test_worley_tiles_without_seam(self):
+        import vk_core as V
+        d, lab = V.worley(128, 192, 32, seed=2, labels=True)
+        self.assertEqual(d.shape, (128, 192))
+        self.assertEqual(len(np.unique(lab)), 4 * 6)
+        # wrapping neighbours differ no more than ordinary neighbours do (no seam)
+        inner = np.abs(np.diff(d, axis=1)).max()
+        self.assertLessEqual(np.abs(d[:, 0] - d[:, -1]).max(), inner + 1e-6)
+        self.assertLessEqual(np.abs(d[0] - d[-1]).max(), np.abs(np.diff(d, axis=0)).max() + 1e-6)
+
+    def test_soft_sparkle_and_fade_io(self):
+        import vk_audio as A
+        x = A.sparkle(1.5, 20, lo=1200, hi=2600)
+        sp = np.abs(np.fft.rfft(x)) ** 2
+        fr = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertLess(sp[fr > 3200].sum() / sp.sum(), 0.01)
+        y = A.fade_io(np.ones((A.SR, 2)), 0.2, 0.3)
+        self.assertLess(abs(y[0, 0]), 1e-6)
+        self.assertLess(abs(y[-1, 1]), 1e-3)
+        self.assertAlmostEqual(y[A.SR // 2, 0], 1.0)
+
     def test_template_frame0_has_title(self):
         import scenes
         img = scenes.render_frame(0.0, 0)
