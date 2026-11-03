@@ -269,6 +269,16 @@ class PipelineTests(unittest.TestCase):
         line = [l for l in buf.getvalue().splitlines() if l.startswith('HITS')][0]
         self.assertIn('4.0', line)
 
+    def test_bgm_key(self):
+        import vk_audio as A
+        import vk_bgm
+        # an A-minor triad pad with a little E and G: should read as A minor (or its relative C major at worst)
+        x = A.P(*[np.sin(2 * np.pi * A.mtof(m) * A.tt(6.0)) * w for m, w in
+                  ((57, 1.0), (60, 0.8), (64, 0.8), (69, 0.6), (55, 0.3), (62, 0.2))])
+        k, mode, r, notes = vk_bgm.key_of(x.astype(np.float32), A.SR)
+        self.assertEqual((vk_bgm.NAMES[k], mode), ('A', 'minor'))
+        self.assertEqual(notes[:5], [69, 72, 74, 76, 79])
+
     def test_render_scan_finalize(self):
         with tempfile.TemporaryDirectory() as d:
             for f in list(SCRIPTS.glob('*.py')) + list(TEMPLATES.glob('*.py')):

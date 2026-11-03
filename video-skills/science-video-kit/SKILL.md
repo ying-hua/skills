@@ -28,7 +28,7 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 - 契约：`TOTAL`（秒）和 `render_frame(t, idx)`，返回 RGB uint8 帧。
 - 模板提供 `Section` 分段、`cap` 字幕、`stamp` 缩放入场标题、cue 列表、`render_frame`。
 - `Section.xin`：与上一段整帧交叉淡化的秒数（上一段会以 `t > dur` 继续绘制）；`Section.post(img, t)`：对成帧做整帧效果（扫描线、画面压扁关机等）。
-- 有 BGM 时可先运行 `python vk_bgm.py <bgm>`，得到速度、逐秒电平、HITS / QUIET / SILENCES 时间点。
+- 有 BGM 时可先运行 `python vk_bgm.py <bgm>`，得到速度、逐秒电平、HITS / QUIET / SILENCES 时间点，以及 KEY（调式 + 五声音阶 MIDI 音符，有音高的音效从中取音，避免和歌曲打架）。
 
 **2. 联系表检查**
 - `python vk_render.py sheet --times 0,12.5,30 --out out/look.png`：把指定时刻的帧拼成一张图。
@@ -63,7 +63,7 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 | `vk_gl.py` | 无头 moderngl 框架：抖动多采样累积 + 快门运动模糊，带 NaN/Inf 保护的 resolve，mip 泛光，ACES，调色，分条渲染防 TDR，`look_at`，`project`（3D 坐标转屏幕坐标，用于贴标签）。着色器约定见文件头注释 |
 | `vk_render.py` | `sheet` 联系表 · `render` 并行可续渲分段（`--from/--to` 只重渲某个时间段）· `concat` |
 | `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`sparkle(lo=, hi=)`（闪光点缀，可压到 2.6 kHz 以下更柔和）、`fade_io`（持续性音效两端的正弦淡入淡出）、`load_bgm`（`offset=` 跳过开头若干秒，把 BGM 的段落挪到想要的画面下）、`automate`（按时间段写音量自动化，如某句台词处把音乐压低 13 dB 再拉回）、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
-| `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES |
+| `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES、`key_of` 调式估计（Krumhansl 音级轮廓，给出五声音阶 MIDI 音符） |
 | `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、`whine`（持续数秒、频率不变的 2.5 kHz 以上窄带尖音）、成片抽帧 `sheet` |
 | `vk_spectral.py` | 光与色觉数学（300–730 nm，含紫外）：`wavelength_rgb` 画彩虹/光谱用的波长→sRGB，CIE 1931 配色函数解析拟合 `cmf`、日光 `daylight`、反射光谱→XYZ→sRGB（`spectrum_xyz`/`xyz_to_linear`/`linear_to_srgb`），Govardovskii 视蛋白模板 `opsin(λmax)` 和 `catches`（任意动物感光细胞的量子捕获，白点归一），`simulate_dichromat`（红/绿色盲模拟），`g`/`sig` 搭反射光谱 |
 | `vk_finalize.py` | loudnorm 响度标准化 + 两遍 x264，压到 `--mb` 指定的大小 |
