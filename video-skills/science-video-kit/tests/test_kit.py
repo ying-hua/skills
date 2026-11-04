@@ -29,6 +29,33 @@ class CoreTests(unittest.TestCase):
             np.add.at(ref, (y0 + dy, x0 + dx), ff * wgt)
         self.assertLess(np.abs(img[..., 0] - ref).max(), 1e-3)
 
+    def test_to_surface_accepts_uint8(self):
+        import vk_core as V
+        img = np.full((4, 6, 3), 64, np.uint8)
+        a = V.surf_np(V.to_surface(img), 6, 4)
+        b = V.surf_np(V.to_surface(img.astype(np.float32) / 255), 6, 4)
+        self.assertLess(abs(a.mean() - 64 / 255), 0.01)
+        self.assertLess(np.abs(a - b).max(), 1e-6)
+        V._KEEP.clear()
+
+    def test_equal_earth_and_lattice_dots(self):
+        import vk_core as V
+        x, y = V.equal_earth([180, 0, 0], [0, 90, 0])
+        self.assertAlmostEqual(float(x[0]), 2.7064, places=3)
+        self.assertAlmostEqual(float(y[1]), 1.3173, places=3)
+        self.assertAlmostEqual(float(x[2]), 0.0, places=9)
+        # dot spacing on screen stays within px range across a 10x zoom, and the lattice is pinned to the world
+        for k in (300.0, 900.0, 3000.0):
+            d = V.lattice_dots(400, 50, 0.123, 0.0, k, 0.02)
+            row = d[25]
+            pk = np.where((row[1:-1] > row[:-2]) & (row[1:-1] >= row[2:]) & (row[1:-1] > 0.3))[0]
+            gaps = np.diff(pk)
+            self.assertGreaterEqual(gaps.min(), 2.5)
+            self.assertLessEqual(np.median(gaps), 12.5)
+        a = V.lattice_dots(200, 20, 0.0, 0.0, 500.0, 0.02)
+        b = V.lattice_dots(200, 20, 0.004, 0.0, 500.0, 0.02)       # camera moved 2 px right -> dots move 2 px left
+        self.assertLess(np.abs(a[:, 2:] - b[:, :-2]).max(), 1e-4)
+
     def test_worley_tiles_without_seam(self):
         import vk_core as V
         d, lab = V.worley(128, 192, 32, seed=2, labels=True)

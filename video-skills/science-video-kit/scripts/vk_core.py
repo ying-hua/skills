@@ -135,9 +135,16 @@ _KEEP = []          # per-frame temporaries: clear with _KEEP.clear() at the end
 _PERSIST = []       # long-lived cached textures (persist=True): never cleared
 
 
+def _unit(img):
+    """uint8 images are 0..255: scale them to 0..1 (multiplying a uint8 array by 255 saturates it to white)"""
+    return img.astype(np.float32) / 255.0 if img.dtype == np.uint8 else img
+
+
 def to_surface(img, persist=False):
-    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP (per-frame, clear it
-    after finish) or, with persist=True, in _PERSIST (for textures cached at import time and reused every frame)."""
+    """rgb (h,w,3) float 0..1 or uint8 0..255 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP
+    (per-frame, clear it after finish) or, with persist=True, in _PERSIST (for textures cached at import time and
+    reused every frame)."""
+    img = _unit(img)
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     a[..., 0] = np.clip(img[..., 2] * 255, 0, 255)
@@ -150,6 +157,7 @@ def to_surface(img, persist=False):
 
 
 def to_surface_rgba(img, alpha, persist=False):
+    img, alpha = _unit(img), _unit(np.asarray(alpha))
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     al = np.clip(alpha, 0, 1)
@@ -232,6 +240,43 @@ def pnoise(h, w, seed=0, octaves=5, base=4, persist=0.55):
         amp *= persist
     out -= out.min()
     return out / max(1e-6, out.max())
+
+
+def equal_earth(lon, lat):
+    """Equal Earth world projection (Savric et al. 2018): degrees -> projected units, x right / y up,
+    x in about +-2.7064 and y in +-1.3173. Equal-area and good-looking for world maps; scale with px = x * k."""
+    A1, A2, A3, A4 = 1.340264, -0.081106, 0.000893, 0.003796
+    lon = np.radians(np.asarray(lon, float))
+    th = np.arcsin(math.sqrt(3) / 2 * np.sin(np.radians(np.asarray(lat, float))))
+    t2 = th * th
+    t6 = t2 * t2 * t2
+    x = 2 * math.sqrt(3) * lon * np.cos(th) / (3 * (9 * A4 * t6 * t2 + 7 * A3 * t6 + 3 * A2 * t2 + A1))
+    return x, th * (A1 + A2 * t2 + t6 * (A3 + A4 * t2))
+
+
+def lattice_dots(w, h, x0, y0, k, spacing, px=(6.0, 12.0), sigma=1.25):
+    """(h, w) float32 halftone dots pinned to world coordinates: the screen shows world point (x0, y0) at its centre,
+    k = screen px per world unit, `spacing` = lattice step (world units) at the coarsest level. As the camera zooms,
+    the lattice halves and the finer level crossfades in, so dots stay px[0]..px[1] apart and a constant size on screen
+    (an "LED map" / dotted land that survives a 10x zoom). Gaussian dots are separable -> one np.outer per level;
+    multiply by a land mask for a dotted map."""
+    sp = spacing * k
+    lv = math.log2(max(sp, 1e-9) / px[0]) / math.log2(px[1] / px[0])
+    n = math.floor(lv)
+    fr = lv - n
+    d0 = spacing / (px[1] / px[0]) ** n
+
+    def prof(m, c0, d):
+        u = (np.arange(m) - m / 2) / k + c0
+        f = (u / d) % 1.0
+        dist = np.minimum(f, 1 - f) * d * k
+        return np.exp(-dist * dist / (2 * sigma * sigma)).astype(np.float32)
+
+    out = np.zeros((h, w), np.float32)
+    for d, wgt in ((d0, 1 - fr), (d0 / (px[1] / px[0]), fr)):
+        if wgt > 0.01:
+            out += np.outer(prof(h, y0, d), prof(w, x0, d)) * wgt
+    return out
 
 
 def worley(h, w, spacing, seed=0, jitter=0.9, tile=True, labels=False):
