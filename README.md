@@ -9,6 +9,7 @@
 | --- | --- |
 | [ae-camera-text-stops](video-skills/ae-camera-text-stops/SKILL.md) | 用 After Effects 原生摄像机制作可编辑的文字演示运镜：停住读字、快速换位，视频和光标连续播放，默认仅横屏；最终 MP4 抽帧核对后直接交付，不再打开编辑器预览。 |
 | [science-video-kit](video-skills/science-video-kit/SKILL.md) | 程序化制作中文讲解视频的 Python 工具箱：2D/GPU 画布与渲染、并行可续渲分段、音效与乐器合成、BGM 结构分析、数值质检、响度标准化压制。只提供工具，不含创意建议。 |
+| [ai-tools-video](video-skills/ai-tools-video/SKILL.md) | 为抖音「AI工具 · 一天一个超实用的网站」系列生成剪映草稿初版和封面：转写配音、看录屏、生成带片头/背景/音效/BGM、快速放大镜头、字幕的剪映草稿，并用 PPT 模板出封面。 |
 | [science-video-aesthetics](video-skills/science-video-aesthetics/SKILL.md) | 科普短视频的审美与叙事方法：把知识放进一个有场景、角色、环境生命和声音的活世界里讲，而不是白板式图解；含开场钩子、脚本结构、21 种已验证画风笔法与更多风格灵感、惊艳自检和一个完整范例。与工具无关，可搭配 science-video-kit。 |
 
 ## 使用前需提供什么
