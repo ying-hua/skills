@@ -7,21 +7,54 @@ description: 为用户的抖音「AI工具 · 一天一个超实用的网站」�
 
 用户在剪映专业版 11.5(SVIP)里做竖屏 1080×1920 抖音视频。Claude 负责出**可编辑的剪映草稿初版**和封面，用户在剪映里微调后导出。
 
-## 关键路径
+## 开工前：先向用户索取这些信息（缺什么问什么，别猜路径）
 
-| 东西 | 位置 |
+这个 skill 的路径**全部因人而异**，代码里不写死。开工第一步，用一条消息把下面清单发给用户，等用户回复后再动手；没拿到的项不要自己编。
+
+**A. 每期必须提供**
+1. **配音音频**（`audio.mp3`，已剪好）——必给。绝对路径或附件。
+2. **项目名 / GitHub 仓库**（`owner/repo`）——只给配音时用来自动抓仓库截图；用户自己给了录屏就以录屏为准。
+3. 可选：屏幕录制 `*.mp4`、选字 3D 运镜 `*_landscape.mp4`（或一段选字录屏，用 camera-text-stops skill 自己做）、期数 `N`。
+
+**B. 首次使用必须确认（确认后写进 `config.json`，之后不用再问）**
+4. **剪映草稿目录**：剪映专业版 › 设置 › 草稿位置里显示的路径 → `JY_DRAFTS_ROOT`。
+5. **剪映预设目录在哪**：用户「我的预设」所在的 `…\JianYingProData\Presets\Combination`（明文 JSON，每个预设一个文件夹 `Presets\<名字>\preset_draft\draft_content.json`）→ `JY_PRESET_ROOT`。**这个地址必须问用户，不要假设**；用户可在剪映预设面板右键预设 › 打开文件位置 找到。
+6. **剪映音效/音乐缓存目录**（`…\JianYingProData\Cache\music`，哈希文件名）→ `JY_CACHE_MUSIC`。
+7. **预设名字**：列出 `JY_PRESET_ROOT\Presets\` 下的文件夹给用户看，确认哪个是片头、哪个是 1 分钟背景、哪些是文字弹出预设（本 skill 原作者用的名字是「片头3」「1分钟背景」「弹上来（砰）」等，见下文；用户的名字不同就改 `opening.py`/`build.py` 里的 `Preset("…")`）。**用户没有预设**就告诉用户：本 skill 的片头/弹出/音效依赖剪映预设，没有的话只能出不带这些动画的基础草稿（字幕、镜头、流光框仍可用）。
+8. 可选：贴纸 PNG 目录（`STICKER_DIR`，`fx.sticker_*` 用，默认 `<skill>/stickers/`，没有就跳过贴纸）、封面模板 `封面.pptx` 路径（需要出封面时）、字体目录 `FONT_DIR`（默认 `C:\Windows\Fonts`，需要微软雅黑 `msyh.ttc/msyhbd.ttc`、思源黑体 `NotoSansSC-VF.ttf`）。
+
+**C. 环境（Agent 自查，缺了再让用户装）**
+- 剪映专业版（原作者用 11.5）、Windows、Node ≥ 18、Python 3.10+、ffmpeg。
+- 工作区（放每期 `epNN/` 的文件夹，用户指定）里建 `.venv`：`pip install pyJianYingDraft==0.3.0 faster-whisper python-pptx pillow numpy opencv-python`。
+- 把本 skill 的 `tools/` 复制（或软链）到工作区的 `tools/`；`templates/build_template.py` 复制成 `epNN/build.py`，它用 `../tools` 导入。
+- `capture.mjs` 需要 **web-search skill**（自带 playwright-core）；装在别处就设环境变量 `WEB_SEARCH_SKILL`。还需要已登录的 `gh` CLI 来取仓库元数据。
+
+**写 `config.json`**（放工作区根目录，不要提交到 git；键名见 `tools/config.py`）：
+```json
+{
+  "JY_DRAFTS_ROOT": "<用户给的草稿目录>",
+  "JY_PRESET_ROOT": "<用户给的预设目录>",
+  "JY_CACHE_MUSIC": "<用户给的音效缓存目录>"
+}
+```
+写完跑 `python -c "import sys;sys.path.insert(0,'tools');import config;print({k:config.get(k) for k in ('JY_DRAFTS_ROOT','JY_PRESET_ROOT','JY_CACHE_MUSIC')})"` 确认目录存在。路径不存在时代码不会悄悄用错位置，要先回去问用户。
+
+> 下文凡是出现「工作区」「每期素材」「剪映草稿目录」「预设」「缓存」「贴纸」「封面 PPT」，都指上面向用户确认过的位置。原作者本机的示例位置只是举例。
+
+## 关键路径（语义说明）
+
+| 东西 | 来源 |
 |---|---|
-| 工作区(代码、每期产物) | `D:\Desktop\temp\视频流\AI工具\ai-tools-video-workspace` |
-| Python 环境 | 工作区 `.venv`（pyJianYingDraft 0.3.0、faster-whisper、python-pptx）。全局 pip 没写权限，一律用 `.venv/Scripts/python` |
-| 每期素材 | `D:\Desktop\temp\视频流\AI工具\<NN-名字>\`：`audio.mp3`(已粗剪细剪)、`屏幕录制*.mp4`、`*_landscape.mp4`(开头 3D 运镜，约 4.6s；用户也可能只给一段选字录屏如 `hl.mp4`，用 camera-text-stops skill 自己做——它的脚本要用装了 cv2 的系统 `python`(C:\Python310)，不是 .venv)。**文件夹名可能写错**，以用户说的期数/项目为准 |
-| 剪映草稿目录 | `E:\JianYingPro Drafts\` |
-| 用户预设(明文!) | `E:\JianYingProData\Presets\Combination\Presets\<名字>\preset_draft\draft_content.json` |
-| 音效/音乐缓存 | `E:\JianYingProData\Cache\music\`（哈希文件名） |
-| Figma 贴纸 PNG | `D:\Desktop\temp\视频流\AI工具\design\output\`（黄脸_01..09、可爱星星 等） |
-| 封面 PPT | `D:\Desktop\temp\视频流\AI工具\封面.pptx`（每期一页：左 3:4、右 4:3） |
-| 参考成片 | 工作区 `example.mp4`（第 8 秒的流光框效果）、`AI工具\28-scrapling\28-scrapling.mp4` |
+| 工作区(代码、每期产物 `epNN/`) | 用户指定，里面有 `.venv`、`tools/`、`config.json` |
+| Python 环境 | 工作区 `.venv`，一律用 `.venv/Scripts/python`（全局 pip 可能没写权限） |
+| 每期素材 | 用户给的文件夹：`audio.mp3`(已粗剪细剪)、`屏幕录制*.mp4`、`*_landscape.mp4`(开头 3D 运镜，约 4.6s；用户也可能只给一段选字录屏如 `hl.mp4`，用 camera-text-stops skill 自己做——它的脚本要用装了 cv2 的系统 `python`，不是 .venv)。**文件夹名可能写错**，以用户说的期数/项目为准 |
+| 剪映草稿目录 | `config.JY_DRAFTS_ROOT` |
+| 用户预设(明文!) | `config.JY_PRESET_ROOT\Presets\<名字>\preset_draft\draft_content.json` |
+| 音效/音乐缓存 | `config.JY_CACHE_MUSIC`（哈希文件名） |
+| 贴纸 PNG | `config.STICKER_DIR`（黄脸_01..09、可爱星星 等；没有就不用贴纸） |
+| 封面 PPT | 用户的 `封面.pptx`（每期一页：左 3:4、右 4:3） |
 
-工具代码在工作区 `tools/`：
+工具代码在 `tools/`(复制到工作区使用)：
 - `srt_import.py` — 剪映智能字幕导出的 SRT → 同格式 `epNN/transcript.json/.srt`（首选）
 - `transcribe.py` — Whisper 逐字时间戳转写 → `epNN/transcript.json/.srt`（兜底）
 - `stable_ranges.py` — 找录屏中静止(未滚动)的时间段，用来挑截帧时刻
@@ -90,7 +123,7 @@ description: 为用户的抖音「AI工具 · 一天一个超实用的网站」�
 - **绝不覆盖用户可能在改的草稿**：`Timeline.save` 现在会检查同名草稿，有 `.backup` 或已加密就拒绝(2026-10-13 第33期 v2 被我重建覆盖过一次)。改 build.py 的脚本出错时别让后面的构建命令照样跑(用 `&&`)。
 - **剪映保存过的草稿会被加密**，Claude 读不回来。所以每次生成**新名字**的草稿（`-v2`、`-v3`），不要覆盖用户正在编辑的版本。`allow_replace=True` 只对 Claude 自己的新名字用。
 - **音效/音乐靠 `effect_id`/`resource_id` 识别，不是 path**。只改 path 会全部变成模板那个音效（第29期 v2 全成了「砰」）。`preset.sound()` 先从预设里复制同名音效素材；预设里没有的，用 `preset.cache_index()` 查：它读剪映素材面板的接口缓存 `E:\JianYingProData\Cache\ressdk_db\*\rp.db` 的 `http_cache` 表，得到 名字 → effect_id + md5，**缓存文件名 = md5**（文件内容 md5 也等于它，已验证）。凡是用户在剪映里试听/用过的音效都可用（2026-10-06 约 121 个，用户已在 `claude-音效测试-v2` 里试听确认全部对得上；`list(preset.cache_index())` 看全部）。名字必须是剪映里的完整标题（如「哐，撞击轻响」「叮铃～魔法音效」）。没试听过的音效没缓存 → 请用户在剪映音效面板里点一下试听即可，不用再做预设。验证音效：`tools/test_sfx.py claude-音效测试-xxx "音效1|音效2"`——**它会新建/覆盖同名草稿**(每 2 秒一个音效+音效名字幕)，**绝不能传成品草稿名**(2026-10-16 把第36期成品覆盖成了音效测试，脚本现在会拒绝已存在的非测试草稿)。
-- 预设 JSON 里的 `##_presetpath_placeholder_..._##` 要替换成 `E:/JianYingProData/Presets/Combination`（`Preset` 已处理）。嵌套复合片段全部平铺在外层 `materials.drafts`，复制片段时要连同引用的所有层级一起带上（`_copy_draft_entry` 已处理）。
+- 预设 JSON 里的 `##_presetpath_placeholder_..._##` 要替换成 `JY_PRESET_ROOT`（`Preset` 已处理）。嵌套复合片段全部平铺在外层 `materials.drafts`，复制片段时要连同引用的所有层级一起带上（`_copy_draft_entry` 已处理）。
 - pyJianYingDraft 生成的明文草稿在 11.5 能正常打开编辑（已验证）。片段素材时长不足会报 `截取的素材时间范围超出`——生成素材时多留 0.2s。
 - 草稿引用的 PNG/MP4 都在工作区 `epNN/assets/`，不要删。
 - 封面 PPT 里文本框居中≠文字居中：`make_covers.ps1` 已把底部文字设为段落居中并把文本框移到封面中心。Vol 标签要关掉 WordWrap 否则 `Vol.029` 会折行。

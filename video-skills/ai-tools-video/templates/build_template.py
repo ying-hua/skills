@@ -6,6 +6,7 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 
+import config
 import fx
 import jy
 import onsets
@@ -17,12 +18,12 @@ from pyJianYingDraft import FontType, TextBorder, TrackType
 EP = 31
 NAME = "Ponytail"
 DRAFT = f"AI工具-{EP}-Ponytail-v3"
-MAT = r"D:\Desktop\temp\视频流\AI工具\31-ponytail"
+MAT = r"<该期素材文件夹>"  # 用户给的素材目录
 VOICE = os.path.join(MAT, "audio", "audio.mp3")
 LANDS = glob.glob(os.path.join(MAT, "*_landscape.mp4"))
 LAND = LANDS[0] if LANDS else None  # 3D 运镜还在做，没有时用仓库页占位
 REC = os.path.join(MAT, "屏幕录制 2026-10-06 145809.mp4")
-BGM = (r"E:\JianYingProData\Cache\music\ae69c6c143e4bfc72ac8165ac509b03c.mp3", "Mane")
+BGM = (os.path.join(config.get("JY_CACHE_MUSIC"), "<bgm md5>.mp3"), "<BGM 名>")  # 用户剪映缓存里的 BGM
 PREVIEW_BG = os.path.join(HERE, "..", "assets", "bg_AI小成_60s.mp4")
 A = os.path.join(HERE, "assets")
 os.makedirs(A, exist_ok=True)

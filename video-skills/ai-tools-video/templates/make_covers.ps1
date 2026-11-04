@@ -1,8 +1,9 @@
-﻿# 用法: powershell -ExecutionPolicy Bypass -File make_covers.ps1 -Vol 031 -White "让你" -Yellow "成为大师" -Shot "D:\...\covers\ep31_shot.png" -OutDir "D:\...\ep31"
+﻿# 用法: powershell -ExecutionPolicy Bypass -File make_covers.ps1 -Vol 031 -White "让你" -Yellow "成为大师" -Shot "<截图.png>" -OutDir "<输出目录>" -Pptx "<封面.pptx>"
 # 复制 封面.pptx 最后一页 → 改 Vol / 底部文字 / 截图 → 文本居中 → 导出 图片1(3:4) 图片2(4:3)
 param([string]$Vol, [string]$White, [string]$Yellow, [string]$Shot, [string]$OutDir,
-      [string]$Pptx = "D:\Desktop\temp\视频流\AI工具\封面.pptx")
+      [string]$Pptx = "")
 $ErrorActionPreference = "Stop"
+if (-not $Pptx -or -not (Test-Path $Pptx)) { throw "请用 -Pptx 指定封面.pptx 的路径(向用户确认)" }
 Copy-Item $Pptx ($Pptx -replace '\.pptx$', ".backup-$(Get-Date -Format yyyyMMddHHmm).pptx")
 $pp = New-Object -ComObject PowerPoint.Application
 $pres = $pp.Presentations.Open($Pptx, 0, 0, 0)
