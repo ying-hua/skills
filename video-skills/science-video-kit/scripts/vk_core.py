@@ -113,6 +113,7 @@ class Canvas:
         self.shoulder = 1.2       # highlight roll-off above 0.85: output tops out near 1/shoulder (1.2 -> ~0.83 grey);
         #                           lower it (e.g. 0.15) when a big area must read as true white (blazing sky, flash)
         self.text_boxes = []      # [(text dict, ink box (x0, y0, x1, y1) px)] filled by finish()
+        self.math_boxes = []      # [(tex, ink box px)] filled by add_math (drawn immediately)
 
     def both(self):
         return (self.c, self.g)
@@ -729,17 +730,29 @@ def math_img(tex, size, color=(1.0, 1.0, 1.0), fontset='stix'):
     return rgb, a
 
 
+_MATH_CACHE = {}     # (tex, size, colour, fontset) -> (surface, glow surface, w, h, ink box); kept for the process
+
+
 def add_math(cv, tex, x, y, size=48, color=None, alpha=1.0, anchor='m', glow=0.0, fontset='stix'):
     """paint a formula with real sub/superscripts, fractions and roots onto the base layer, centred at (x, y)
-    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order."""
+    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order.
+    The rendered formula is cached per (tex, size, colour, fontset): mathtext costs ~50-150 ms, so per-frame calls
+    would dominate a render. The ink box goes to cv.math_boxes so text_in_zones() sees formulas too."""
     if alpha <= 0.004:
         return
-    rgb, a = math_img(tex, int(size), tuple(color or CREAM), fontset)
-    h, w = a.shape
+    key = (tex, int(size), tuple(round(float(c), 4) for c in (color or CREAM)), fontset)
+    if key not in _MATH_CACHE:
+        rgb, a = math_img(tex, int(size), key[2], fontset)
+        ys, xs = np.nonzero(a > 0.25)
+        ink = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1) if len(xs) else (0, 0, 0, 0)
+        _MATH_CACHE[key] = (to_surface_rgba(rgb, a, persist=True), to_surface_rgba(rgb * 0.6, a, persist=True),
+                            a.shape[1], a.shape[0], ink)
+    s1, s2, w, h, ink = _MATH_CACHE[key]
     x0 = x - (w / 2 if anchor == 'm' else (w if anchor == 'r' else 0))
-    paint_img(cv.c, to_surface_rgba(rgb, a), x0, y - h / 2, alpha=alpha)
+    paint_img(cv.c, s1, x0, y - h / 2, alpha=alpha)
     if glow > 0:
-        paint_img(cv.g, to_surface_rgba(rgb * glow, a), x0, y - h / 2, alpha=alpha)
+        paint_img(cv.g, s2, x0, y - h / 2, alpha=min(1.0, alpha * glow / 0.6))
+    cv.math_boxes.append((tex, (x0 + ink[0], y - h / 2 + ink[1], x0 + ink[2], y - h / 2 + ink[3])))
 
 
 def missing_glyphs(markup, weight=800, sans=False, font=None):
@@ -880,13 +893,15 @@ def _render_text(img, d):
 def text_in_zones(cv, zones):
     """Call after finish(cv). zones = [(x0, y0, x1, y1)] as fractions of the frame (e.g. a cover's top-left corner
     (0, 0, 0.5, 0.25) that a platform badge will cover). Returns [(markup, box_px, zone)] for every text whose ink
-    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted)."""
+    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted).
+    Formulas painted with add_math are checked too (their markup is the tex string)."""
     hits = []
-    for d, b in cv.text_boxes:
+    items = [(d['markup'], b) for d, b in cv.text_boxes] + list(getattr(cv, 'math_boxes', []))
+    for m, b in items:
         for z in zones:
             zx0, zy0, zx1, zy1 = z[0] * W, z[1] * H, z[2] * W, z[3] * H
             if b[0] < zx1 and b[2] > zx0 and b[1] < zy1 and b[3] > zy0:
-                hits.append((d['markup'], b, z))
+                hits.append((m, b, z))
     return hits
 
 

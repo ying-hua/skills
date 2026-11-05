@@ -184,6 +184,27 @@ class CoreTests(unittest.TestCase):
         self.assertGreater(v.finish(cv, 0)[480:600, 760:1160].max(), 200)
         v._KEEP.clear()
 
+    def test_add_math_cached_and_zoned(self):
+        import vk_core as v, time
+        try:
+            v.math_img('x', 20)
+        except ImportError:
+            self.skipTest('no matplotlib')
+        cv = v.Canvas()
+        tex = r'\aleph_0 < 2^{\aleph_0}'
+        v.add_math(cv, tex, 200, 100, 64)
+        t0 = time.time()
+        for _ in range(20):
+            v.add_math(cv, tex, 200, 100, 64)
+        self.assertLess(time.time() - t0, 0.5)          # cached: no mathtext re-render per call
+        v._KEEP.clear()
+        v.add_math(cv, tex, 200, 100, 64)               # cache survives the per-frame _KEEP.clear()
+        img = v.finish(cv, 0)
+        self.assertGreater(img[60:140, 100:300].max(), 120)            # corner vignette dims it a little
+        hits = v.text_in_zones(cv, [(0, 0, 0.5, 0.25)])
+        self.assertTrue(hits and hits[0][0] == tex)
+        self.assertFalse(v.text_in_zones(cv, [(0.5, 0.5, 1, 1)]))
+
     def test_text_boxes_and_zones(self):
         import vk_core as v
         cv = v.Canvas()
