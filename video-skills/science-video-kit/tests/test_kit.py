@@ -3,7 +3,9 @@ Needs numpy, scipy, pycairo, opencv-python, Pillow, ffmpeg/ffprobe. The GPU test
 import contextlib, io, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
+import math
 import numpy as np
+import cv2
 
 SKILL = Path(__file__).resolve().parents[1]
 SCRIPTS, TEMPLATES = SKILL / 'scripts', SKILL / 'assets' / 'templates'
@@ -468,6 +470,41 @@ class WarpAndWhineTests(unittest.TestCase):
         self.assertEqual(len(r1), 1)
         self.assertAlmostEqual(np.mean([f for _, f in r1[0]]), 3500, delta=60)
         self.assertEqual(r2, [])
+
+
+class SphereFitTests(unittest.TestCase):
+    def test_fit_rotation_recovers_known_rotation(self):
+        import vk_core as C
+        src = [(-35, -6), (-40, -15), (-48, -28), (-50, 0), (-60, -35)]
+        ax = C._unit3(-30.0, 45.0)
+        K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+        th = math.radians(57)
+        M0 = np.eye(3) + math.sin(th) * K + (1 - math.cos(th)) * (K @ K)
+        dst = list(zip(*C.rotate_lonlat(M0, *np.array(src, float).T)))
+        M = C.fit_rotation(src, dst)
+        self.assertTrue(np.allclose(M, M0, atol=1e-9))
+        h = C.rot_power(M, 0.5)
+        self.assertTrue(np.allclose(h @ h, M, atol=1e-9))
+        self.assertTrue(np.allclose(C.rot_power(M, 0.0), np.eye(3)))
+
+    def test_sample_points_beyond_remap_limit(self):
+        import vk_core as C
+        img = np.arange(64 * 128, dtype=np.float32).reshape(64, 128)
+        n = 70000
+        rng = np.random.default_rng(0)
+        xs, ys = rng.integers(0, 128, n).astype(np.float32), rng.integers(0, 64, n).astype(np.float32)
+        out = C.sample_points(img, xs, ys, cv2.INTER_NEAREST)
+        self.assertEqual(out.shape, (n,))
+        self.assertTrue(np.array_equal(out, img[ys.astype(int), xs.astype(int)]))
+
+    def test_smoothstep_arrays(self):
+        import vk_core as C
+        x = np.linspace(-1, 2, 7)
+        y = C.ss(0, 1, x)
+        self.assertEqual(y.shape, x.shape)
+        self.assertAlmostEqual(float(y[0]), 0.0)
+        self.assertAlmostEqual(float(y[-1]), 1.0)
+        self.assertAlmostEqual(C.ss(0, 1, 0.5), 0.5)
 
 
 class GLTests(unittest.TestCase):

@@ -33,11 +33,17 @@ HILITE = (1.0, 0.85, 0.45)
 
 
 def clamp01(x):
+    """works on scalars and numpy arrays"""
+    if isinstance(x, np.ndarray):
+        return np.clip(x, 0.0, 1.0)
     return min(1.0, max(0.0, x))
 
 
 def ss(a, b, x):
-    t = clamp01((x - a) / (b - a)) if b != a else float(x >= a)
+    """smoothstep from a to b; x may be a scalar or a numpy array"""
+    if b == a:
+        return (np.asarray(x) >= a).astype(np.float64) if isinstance(x, np.ndarray) else float(x >= a)
+    t = clamp01((x - a) / (b - a))
     return t * t * (3 - 2 * t)
 
 
@@ -379,6 +385,59 @@ def sample_equirect(tex, lon, lat):
     mx = ((np.asarray(lon) + 180) / 360 * tw - 0.5).astype(np.float32)
     my = ((90 - np.asarray(lat)) / 180 * th - 0.5).astype(np.float32)
     return cv2.remap(tex, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+
+
+def sample_points(img, mx, my, interp=cv2.INTER_LINEAR, border=cv2.BORDER_WRAP):
+    """cv2.remap for an arbitrary number of sample points (1-D pixel coords mx, my of any length). cv2.remap needs
+    both map dimensions < 32767, so a (N, 1) map with N > 32767 fails; the points are folded into rows of 2048.
+    Typical use: sample only the pixels of a disc / a selection (globe pixels, per-plate caps) from a big texture."""
+    mx = np.asarray(mx, np.float32).ravel()
+    my = np.asarray(my, np.float32).ravel()
+    n = mx.size
+    if n == 0:
+        return np.zeros((0,) + img.shape[2:], img.dtype)
+    cw = 2048
+    rows = (n + cw - 1) // cw
+    pad = rows * cw - n
+    MX = np.concatenate([mx, np.zeros(pad, np.float32)]).reshape(rows, cw)
+    MY = np.concatenate([my, np.zeros(pad, np.float32)]).reshape(rows, cw)
+    out = cv2.remap(img, MX, MY, interp, borderMode=border)
+    return out.reshape((rows * cw,) + img.shape[2:])[:n]
+
+
+def _unit3(lon, lat):
+    lo, la = np.radians(np.asarray(lon, np.float64)), np.radians(np.asarray(lat, np.float64))
+    return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], -1)
+
+
+def fit_rotation(src, dst):
+    """best rotation (3x3, least squares / Kabsch) taking lon/lat points src [(lon, lat), ...] onto dst - e.g. fit a
+    continent's coastline points onto where they sat in an old supercontinent, or rotate a region of a globe so
+    chosen landmarks land on chosen spots. Use rotate_lonlat(M, ..., k) to animate it."""
+    a, b = _unit3(*np.array(src, np.float64).T), _unit3(*np.array(dst, np.float64).T)
+    U, _, Vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+
+def rot_power(M, k):
+    """fraction k of rotation M (same axis, k * angle): k = 0 -> identity, 1 -> M. Linear in angle = constant speed
+    along great circles (slerp from the identity)."""
+    ang = math.acos(max(-1.0, min(1.0, (np.trace(M) - 1) / 2)))
+    if ang < 1e-9:
+        return np.eye(3)
+    ax = np.array([M[2, 1] - M[1, 2], M[0, 2] - M[2, 0], M[1, 0] - M[0, 1]]) / (2 * math.sin(ang))
+    K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+    th = ang * k
+    return np.eye(3) + math.sin(th) * K + (1 - math.cos(th)) * (K @ K)
+
+
+def rotate_lonlat(M, lon, lat, k=1.0):
+    """apply rotation M (or the fraction k of it) to lon/lat (deg). Returns lon, lat. For per-pixel drawing of a
+    rotated region use the inverse: sample the texture at rotate_lonlat(M.T, screen_lon, screen_lat)."""
+    R = M if k == 1.0 else rot_power(M, k)
+    v = _unit3(lon, lat) @ R.T
+    return np.degrees(np.arctan2(v[..., 1], v[..., 0])), np.degrees(np.arcsin(np.clip(v[..., 2], -1, 1)))
 
 
 # ---------------------------------------------------------------- generic effects
