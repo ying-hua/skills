@@ -865,16 +865,18 @@ def text_width(markup, size, weight=800, tracking=0.02, sans=False, font=None):
 
 
 def add_text(cv, markup, x, y, size=56, color=None, alpha=1.0, t=1e9, anim='rise', anchor='m', weight=800,
-             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0, font=None):
+             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0, font=None, late=False):
     """queue text (drawn in post). t = time since appearance. anim: 'rise' (per-char), 'type', None.
     scale != 1 gives a 'stamp' slam-in when animated from ~1.35 -> 1.
-    font = path to one font used for every glyph of this string (handwriting, kai, mono ...)."""
+    font = path to one font used for every glyph of this string (handwriting, kai, mono ...).
+    late=True: finish() leaves this text out (kept in cv.late_texts) so it can be drawn with draw_texts() AFTER a
+    full-frame effect (blur, eyelids, squash ...) and stay sharp on top of it."""
     color = color or CREAM
     if alpha <= 0.004 or t < 0:
         return
     cv.texts.append(dict(markup=markup, x=x, y=y, size=size, color=color, alpha=alpha, t=t, anim=anim,
                          anchor=anchor, weight=weight, tracking=tracking, stagger=stagger, dur=dur,
-                         shadow=shadow, glow=glow, sans=sans, scale=scale, font=font))
+                         shadow=shadow, glow=glow, sans=sans, scale=scale, font=font, late=late))
 
 
 def _render_text(img, d):
@@ -947,6 +949,14 @@ def _render_text(img, d):
     if len(ys):
         return (fx0 + int(xs.min()), fy0 + int(ys.min()), fx0 + int(xs.max()) + 1, fy0 + int(ys.max()) + 1)
     return None
+
+
+def draw_texts(img, texts):
+    """composite queued text dicts (e.g. cv.late_texts) onto a finished uint8 RGB frame; returns (frame, ink boxes).
+    Use after a whole-frame effect in Section.post so captions are not blurred / darkened with the picture."""
+    f = img.astype(np.float32) / 255.0
+    boxes = [(d, _render_text(f, d)) for d in texts]
+    return (np.clip(f, 0, 1) * 255 + 0.5).astype(np.uint8), [(d, b) for d, b in boxes if b]
 
 
 def text_in_zones(cv, zones):
@@ -1085,7 +1095,10 @@ def finish(cv, frame_idx=0):
         b = b + b2 * 0.7
         img += cv2.resize(b, (W, H), interpolation=cv2.INTER_LINEAR)
     cv.text_boxes = []
+    cv.late_texts = [d for d in cv.texts if d.get('late')]
     for d in cv.texts:
+        if d.get('late'):
+            continue
         b = _render_text(img, d)
         if b:
             cv.text_boxes.append((d, b))

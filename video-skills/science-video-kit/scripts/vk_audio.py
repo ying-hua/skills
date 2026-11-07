@@ -330,13 +330,20 @@ def cloth():
     return norm(filt(noise(0.5), 'band', [500, 3000]) * np.sin(np.pi * tt(0.5) / 0.5) ** 2, 0.3)
 
 
-def heartbeat(n=3, period=0.9):
-    beat = sweep(70, 45, 0.18) * env(0.18, 0.004, 22)
+def heartbeat(n=3, period=0.9, f=95.0):
+    """lub-dub heartbeat. The body sits at f (~95 Hz) with 2nd/3rd harmonics and a short lowpassed click, so it is
+    heard on phone / laptop speakers (the old 70 -> 45 Hz sine was inaudible there). period may shrink for a
+    quickening pulse: build several calls or loop yourself."""
+    d = 0.28
+    t = tt(d)
+    ph = 2 * np.pi * np.cumsum(f * (1 + 0.6 * np.exp(-t * 30))) / SR
+    beat = (np.sin(ph) + 0.45 * np.sin(2 * ph) + 0.25 * np.sin(3 * ph)) * env(d, 0.003, 11)
+    beat = P(beat, filt(noise(d), 'low', 500) * env(d, 0.001, 40) * 0.4)
     out = np.zeros(int((n * period + 1) * SR))
     for k in range(n):
-        for dl, g in ((0, 1.0), (0.22, 0.7)):
+        for dl, g in ((0, 1.0), (0.22, 0.65)):
             i = int((k * period + dl) * SR)
-            out[i:i + len(beat)] += beat * g
+            out[i:i + len(beat)] += beat[:len(out) - i] * g
     return norm(out, 0.9)
 
 

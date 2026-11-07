@@ -507,6 +507,28 @@ class SphereFitTests(unittest.TestCase):
         self.assertAlmostEqual(C.ss(0, 1, 0.5), 0.5)
 
 
+class LateTextAndHeartbeatTests(unittest.TestCase):
+    def test_late_text_skips_finish_and_survives_blur(self):
+        import vk_core as V
+        cv = V.Canvas()
+        V.add_text(cv, 'SHARP', V.W / 2, V.H / 2, 90, anim=None, late=True, shadow=0)
+        img = V.finish(cv, 0)
+        self.assertEqual(len(cv.late_texts), 1)
+        self.assertLess(img[V.H // 2 - 40:V.H // 2 + 40, V.W // 2 - 150:V.W // 2 + 150].max(), 60)
+        blurred = cv2.GaussianBlur(img, (0, 0), 8)
+        out, boxes = V.draw_texts(blurred, cv.late_texts)
+        self.assertEqual(len(boxes), 1)
+        self.assertGreater(out[V.H // 2 - 40:V.H // 2 + 40, V.W // 2 - 150:V.W // 2 + 150].max(), 200)
+
+    def test_heartbeat_audible_above_150hz(self):
+        import vk_audio as A
+        x = A.heartbeat(3, 0.8)
+        self.assertTrue(np.isfinite(x).all())
+        X = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertGreater(X[f > 150].sum() / X.sum(), 0.15)
+
+
 class GLTests(unittest.TestCase):
     def test_gl_render_and_nan_guard(self):
         try:
