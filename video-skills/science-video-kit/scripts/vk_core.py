@@ -1046,11 +1046,19 @@ def _paint_warped(ctx, arr, Hm, ow, oh, alpha):
     ctx.restore()
 
 
+def warp_point(Hm, x, y, scale=1.0):
+    """screen px of a layer point (x, y) in layer units - for add_text labels, glows or hit markers that must sit on a
+    warped layer. Pass the same `scale` that went to tilt_homography / warp_layer."""
+    p = np.asarray(Hm, np.float64) @ np.array([x * scale, y * scale, 1.0])
+    return float(p[0] / p[2]), float(p[1] / p[2])
+
+
 def warp_layer(cv, draw, lw, lh, Hm, alpha=1.0, scale=1.0):
     """perspective 2.5D: draw(c, g) paints a flat scene (a machine, a board, a map) in layer units 0..lw x 0..lh on a
     transparent base context c and a half-res additive glow context g; both are warped by Hm (tilt_homography) onto
     cv.c and cv.g, so lamps on the tilted object still bloom. scale = layer px per unit (raise it for close-ups so
-    the texture is not magnified; ~0.05 s per 2000 px layer). Clear _KEEP per frame as usual."""
+    the texture is not magnified; ~0.05 s per 2000 px layer). Clear _KEEP per frame as usual.
+    Hm must come from tilt_homography(..., scale=<the same scale>) - with a mismatch the layer lands shrunk in a corner."""
     w, h = int(lw * scale), int(lh * scale)
     sb = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
     sg = cairo.ImageSurface(cairo.FORMAT_ARGB32, w // 2, h // 2)

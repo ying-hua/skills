@@ -449,6 +449,26 @@ class WarpAndWhineTests(unittest.TestCase):
         rows = [np.count_nonzero(img[y, :, 1] > 150) for y in (top[3], top[-4])]
         self.assertLess(rows[0], rows[1])            # far (top) edge is narrower than the near edge
 
+    def test_warp_point_matches_a_scaled_layer(self):
+        import vk_core as V
+        cv = V.Canvas()
+
+        def draw(c, g):
+            c.arc(300, 200, 12, 0, V.TAU)
+            c.set_source_rgb(1, 1, 1)
+            c.fill()
+
+        sc = 0.5
+        Hm = V.tilt_homography(400, 300, zoom=1.5, tilt=0.6, scale=sc)
+        V.warp_layer(cv, draw, 400, 300, Hm, scale=sc)
+        x, y = V.warp_point(Hm, 300, 200, sc)
+        img = V.finish(cv, 0)
+        V._KEEP.clear()
+        ys, xs = np.nonzero(img[..., 1] > 120)
+        self.assertTrue(len(xs) > 10)
+        self.assertLess(abs(xs.mean() - x), 4)
+        self.assertLess(abs(ys.mean() - y), 4)
+
     def test_whine_flags_a_sustained_high_tone_not_clicks(self):
         if not has_ffmpeg():
             self.skipTest('ffmpeg missing')
