@@ -81,6 +81,15 @@ def win(t, t0, t1, fin=0.35, fout=0.35):
     return min(clamp01((t - t0) / fin) if fin > 0 else 1, clamp01((t1 - t) / fout) if fout > 0 else 1)
 
 
+def fit_view(x0, y0, x1, y1, pad=70, top=40, bottom=150, zmax=4.0):
+    """(zoom, cx, cy) for Canvas.set_cam that frames the world box (x0, y0)-(x1, y1) inside the screen area left
+    free by a bottom caption band (`bottom` px) and a top margin, centred in that area (not in the full frame).
+    Interpolate zoom in log space when moving between two framings."""
+    aw, ah = W - 2 * pad, H - top - bottom
+    z = min(aw / max(x1 - x0, 1e-6), ah / max(y1 - y0, 1e-6), zmax)
+    return z, (x0 + x1) / 2, (y0 + y1) / 2 + ((bottom - top) / 2) / z
+
+
 def hrand(*a):
     """deterministic hash -> [0,1)"""
     h = 0

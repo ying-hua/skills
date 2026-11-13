@@ -549,6 +549,18 @@ class LateTextAndHeartbeatTests(unittest.TestCase):
         self.assertGreater(X[f > 150].sum() / X.sum(), 0.15)
 
 
+class FitViewTests(unittest.TestCase):
+    def test_box_lands_above_caption_band(self):
+        import vk_core as V
+        z, cx, cy = V.fit_view(-300, -100, 500, 700, pad=50, top=40, bottom=200)
+        sx = lambda x: V.W / 2 + (x - cx) * z
+        sy = lambda y: V.H / 2 + (y - cy) * z
+        self.assertGreaterEqual(sy(-100), 40 - 1e-6)
+        self.assertLessEqual(sy(700), V.H - 200 + 1e-6)
+        self.assertAlmostEqual((sy(-100) + sy(700)) / 2, (40 + V.H - 200) / 2, places=4)
+        self.assertAlmostEqual((sx(-300) + sx(500)) / 2, V.W / 2, places=4)
+
+
 class GLTests(unittest.TestCase):
     def test_gl_render_and_nan_guard(self):
         try:
