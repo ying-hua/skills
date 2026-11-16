@@ -27,8 +27,8 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 **1. 场景代码**（`scenes.py`）
 - 契约：`TOTAL`（秒）和 `render_frame(t, idx)`，返回 RGB uint8 帧。
 - 模板提供 `Section` 分段、`cap` 字幕、`stamp` 缩放入场标题、cue 列表、`render_frame`。
-- `Section.xin`：与上一段整帧交叉淡化的秒数（上一段会以 `t > dur` 继续绘制）；`Section.post(img, t)`：对成帧做整帧效果（扫描线、画面压扁关机等）。
-- 有 BGM 时可先运行 `python vk_bgm.py <bgm>`，得到速度、逐秒电平、HITS / QUIET / SILENCES 时间点。
+- `Section.xin`：与上一段整帧交叉淡化的秒数（上一段会以 `t > dur` 继续绘制）；`Section.post(img, t)`：对成帧做整帧效果（扫描线、画面压扁关机、整帧模糊等）；`add_text(..., late=True)` 的字在 `post` 之后由 `draw_texts` 画上，不会被效果糊掉。
+- 有 BGM 时可先运行 `python vk_bgm.py <bgm>`，得到速度、逐秒电平、HITS / QUIET / SILENCES 时间点，以及 KEY（调式 + 五声音阶 MIDI 音符，有音高的音效从中取音，避免和歌曲打架）。
 
 **2. 联系表检查**
 - `python vk_render.py sheet --times 0,12.5,30 --out out/look.png`：把指定时刻的帧拼成一张图。
@@ -45,6 +45,7 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 
 **5. 质检与压制**
 - `python vk_scan.py spikes out/chunks/*.mp4`：报告闪帧、NaN 黑块等可疑帧。
+- `python vk_scan.py whine <音效总线.wav>`：查持续的刺耳高音（单独导出音效/配乐总线来查，外部歌曲本身可能触发）。
 - `python vk_scan.py levels out/soundtrack.wav`：音频逐秒 RMS/峰值（dBFS），并列出比最响处低 30 dB 以上的秒；传视频文件则给出逐秒平均亮度。
 - `python vk_finalize.py --out out/<name>.mp4`：loudnorm −14 LUFS + 两遍 x264，压到 `--mb` 指定大小。
 - `python vk_scan.py sheet <成片> 5,40,90 [out.png]`：从成片指定时刻抽帧拼图。
@@ -58,12 +59,12 @@ compatibility: "Requires Python 3.9+ with numpy, scipy, pycairo, opencv-python (
 
 | 文件 | 内容 |
 |---|---|
-| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`pnoise`（x 方向首尾相接的噪声，用于贴到球面上的经纬纹理），`splat_points` 一次画上万颗亚像素点光源（星空、粒子），`to_surface`/`paint_img` 贴 numpy 纹理（缓存纹理用 `persist=True`）。<br>**3D**：`Cam(pos, target, fov)` 看向目标的针孔相机（`proj` 把 3D 点投到屏幕，`rays` 给逐像素视线，可在半分辨率上做球内壁等光线求交）；`ortho_project` / `ortho_lonlat` / `sample_equirect` 用一张经纬（等距圆柱）贴图画正射投影的地球或行星，并把经纬点标到球面上。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`polyline`（折线路径，`frac<1` 只画前一段长度，做“一笔笔画出来”的描边）、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体、等宽等；该字体缺的字按“指定字体 → 拉丁/中文默认 → 符号字体”依次退回，`has_glyph` / `missing_glyphs` 可查），`add_math` 用 matplotlib mathtext 排公式（真正的上下标、分数、根号），`set_fonts`，`set_tags`；`finish` 后 `cv.text_boxes` 记录每条文字的字墨外框，`text_in_zones(cv, zones)` 检查封面避让区。<br>**合成**：`group(cv, fn, a)` 把一段子场景（两层 + 文字）当整体淡入淡出。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩（`cv.shoulder`，调低才能出纯白）、色差、暗角、颗粒、淡出） |
+| `vk_core.py` | **画布**：`Canvas`（cairo 底层 + 半分辨率加色发光层 `cv.g`，用于泛光），`set_cam` 缩放/平移/旋转/震动，`fit_view` 算出把世界坐标里一块区域放进字幕带以上并居中的镜头参数。<br>**辅助**：缓动 `ss/ease_out/ease_io/back_out`，`win()` 显隐窗口，`hrand` 确定性哈希，`fbm` 噪声，`pnoise`（x 方向首尾相接的噪声，用于贴到球面上的经纬纹理），`worley`（可无缝平铺的细胞噪声：日面米粒、植物细胞、泡沫，`labels=True` 另给每格编号以画细胞壁），`splat_points` 一次画上万颗亚像素点光源（星空、粒子），`bokeh_points` 按弥散圆分档给上万个点加景深（离焦的点成镜头光斑，`disc_kernel` 为圆盘核），`to_surface`/`paint_img` 贴 numpy 纹理（float 0–1 或 uint8 都行；缓存纹理用 `persist=True`），`equal_earth` 世界地图投影（等积、好看），`sample_points` 不受 32767 限制地按任意多个点采样纹理，`fit_rotation` / `rot_power` / `rotate_lonlat` 从几对经纬点拟合球面旋转并按比例插值（大陆漂移、地图拼图），`lattice_dots` 钉在世界坐标上、随缩放分级淡入的半色调点阵（点阵地图、LED 屏）。<br>**3D**：`Cam(pos, target, fov)` 看向目标的针孔相机（`proj` 把 3D 点投到屏幕，`rays` 给逐像素视线，可在半分辨率上做球内壁等光线求交）；`ortho_project` / `ortho_lonlat` / `sample_equirect` 用一张经纬（等距圆柱）贴图画正射投影的地球或行星，并把经纬点标到球面上。<br>**特效**：`tracer` 弹道、`muzzle` 枪口闪光、`impact` 尘土冲击、`dust_motes` 尘埃、`reticle` 准星、`dashed_line`、`arrow_head`、`polyline`（折线路径，`frac<1` 只画前一段长度，做“一笔笔画出来”的描边）、`rrect`、`panel`。<br>**文字**：`add_text(cv, '[k]彩色[/] 标记', x, y, size, t=, anim='rise'/'type'/None, scale=, glow=, font=)`，中英混排；`font=` 为单条文字指定一种字体（手写体、楷体、等宽等；该字体缺的字按“指定字体 → 拉丁/中文默认 → 符号字体”依次退回，`has_glyph` / `missing_glyphs` 可查），`add_math` 用 matplotlib mathtext 排公式（真正的上下标、分数、根号；结果按公式缓存，可每帧调用），`set_fonts`，`set_tags`；`late=True` + `draw_texts(img, cv.late_texts)` 把字画在整帧后期效果之上；`finish` 后 `cv.text_boxes` 记录每条文字的字墨外框，`text_in_zones(cv, zones)` 检查封面避让区（含 `add_math` 公式）。，`world_text(ctx, ...)` 用 cairo 直接画拉丁字母（跟随镜头变换和透视层，适合表盘、字母表、密文等成百上千个小标签）。<br>**2.5D**：`tilt_homography` + `warp_layer(cv, draw, lw, lh, Hm)` 把一个平面场景（机器、棋盘、桌面）画好后透视贴到倾斜的桌面上，底层和发光层一起变形，灯光照样泛光；`warp_point(Hm, x, y, scale)` 给出层上某点的屏幕坐标（贴标签）。<br>**合成**：`group(cv, fn, a)` 把一段子场景（两层 + 文字）当整体淡入淡出。<br>**后期**：`finish(cv, idx)`（泛光、文字、闪白、高光压缩（`cv.shoulder`，调低才能出纯白）、色差、暗角、颗粒、淡出） |
 | `vk_gl.py` | 无头 moderngl 框架：抖动多采样累积 + 快门运动模糊，带 NaN/Inf 保护的 resolve，mip 泛光，ACES，调色，分条渲染防 TDR，`look_at`，`project`（3D 坐标转屏幕坐标，用于贴标签）。着色器约定见文件头注释 |
 | `vk_render.py` | `sheet` 联系表 · `render` 并行可续渲分段（`--from/--to` 只重渲某个时间段）· `concat` |
-| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`load_bgm`（`offset=` 跳过开头若干秒，把 BGM 的段落挪到想要的画面下）、`automate`（按时间段写音量自动化，如某句台词处把音乐压低 13 dB 再拉回）、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
-| `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES |
-| `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、成片抽帧 `sheet` |
+| `vk_audio.py` | 约 35 种音效；乐器 `fm_bell`、`pluck`（Karplus-Strong，音高有几音分误差）、`pluck_exact` / `organ` / `additive`（加法合成，音高精确，适合音程、拍音演示）、`square`/`tri`（无混叠的芯片音乐方波、三角波）、`choir`（共振峰元音合唱垫）、`supersaw`、`pad`、`kick/snare/hat`、`marimba`、`epiano`、`sub`；`reverb`、`echo`、`pingpong`、`Bus`、`render_cues`、`click_rain`（一个事件一声）、`sparkle(lo=, hi=)`（闪光点缀，可压到 2.6 kHz 以下更柔和）、`fade_io`（持续性音效两端的正弦淡入淡出）、`load_bgm`（`offset=` 跳过开头若干秒，把 BGM 的段落挪到想要的画面下）、`automate`（按时间段写音量自动化，如某句台词处把音乐压低 13 dB 再拉回）、`duck`、`level`（慢速电平拉平，缩小安静段与高潮的差距）、`movavg`、`master` |
+| `vk_bgm.py` | BGM 结构分析：速度、逐秒电平、HITS / QUIET / SILENCES、`key_of` 调式估计（Krumhansl 音级轮廓，给出五声音阶 MIDI 音符） |
+| `vk_scan.py` | `spikes`（闪帧、NaN 黑块）、`levels`（音频 dBFS / 视频亮度）、`whine`（持续数秒、频率不变的 2.5 kHz 以上窄带尖音）、成片抽帧 `sheet` |
 | `vk_spectral.py` | 光与色觉数学（300–730 nm，含紫外）：`wavelength_rgb` 画彩虹/光谱用的波长→sRGB，CIE 1931 配色函数解析拟合 `cmf`、日光 `daylight`、反射光谱→XYZ→sRGB（`spectrum_xyz`/`xyz_to_linear`/`linear_to_srgb`），Govardovskii 视蛋白模板 `opsin(λmax)` 和 `catches`（任意动物感光细胞的量子捕获，白点归一），`simulate_dichromat`（红/绿色盲模拟），`g`/`sig` 搭反射光谱 |
 | `vk_finalize.py` | loudnorm 响度标准化 + 两遍 x264，压到 `--mb` 指定的大小 |
 

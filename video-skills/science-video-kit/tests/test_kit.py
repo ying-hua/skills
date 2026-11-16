@@ -3,7 +3,9 @@ Needs numpy, scipy, pycairo, opencv-python, Pillow, ffmpeg/ffprobe. The GPU test
 import contextlib, io, os, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
+import math
 import numpy as np
+import cv2
 
 SKILL = Path(__file__).resolve().parents[1]
 SCRIPTS, TEMPLATES = SKILL / 'scripts', SKILL / 'assets' / 'templates'
@@ -15,6 +17,79 @@ def has_ffmpeg():
 
 
 class CoreTests(unittest.TestCase):
+    def test_splat_points_matches_add_at(self):
+        import vk_core as V
+        r = np.random.default_rng(3)
+        xs, ys, f = r.uniform(-5, 205, 5000), r.uniform(-5, 105, 5000), r.uniform(0, 2, 5000)
+        img = np.zeros((100, 200, 3), np.float32)
+        V.splat_points(img, xs, ys, f, sigma=0)
+        ref = np.zeros((100, 200), np.float64)
+        x0, y0 = np.floor(xs).astype(int), np.floor(ys).astype(int)
+        ok = (x0 >= 0) & (y0 >= 0) & (x0 < 199) & (y0 < 99)
+        x0, y0, ff, fx, fy = x0[ok], y0[ok], f[ok], (xs - np.floor(xs))[ok], (ys - np.floor(ys))[ok]
+        for dx, dy, wgt in ((0, 0, (1 - fx) * (1 - fy)), (1, 0, fx * (1 - fy)), (0, 1, (1 - fx) * fy), (1, 1, fx * fy)):
+            np.add.at(ref, (y0 + dy, x0 + dx), ff * wgt)
+        self.assertLess(np.abs(img[..., 0] - ref).max(), 1e-3)
+
+    def test_bokeh_points_discs_and_energy(self):
+        import vk_core as V
+        img = np.zeros((120, 200, 3), np.float32)
+        V.bokeh_points(img, [50.0, 150.0], [60.0, 60.0], [0.5, 30.0], 10.0, (1.0, 0.5, 0.25), gain=1.0)
+        # sharp point stays compact, defocused point spreads into a wide flat disc
+        sharp, blur = img[:, :100, 0], img[:, 100:, 0]
+        self.assertGreater(sharp.max(), 10 * blur.max())
+        self.assertGreater((blur > blur.max() * 0.5).sum(), 300)
+        self.assertAlmostEqual(float(blur.sum()), 10.0, delta=0.3)          # energy kept
+        self.assertAlmostEqual(float(img[..., 1].sum() / img[..., 0].sum()), 0.5, places=3)
+
+    def test_to_surface_accepts_uint8(self):
+        import vk_core as V
+        img = np.full((4, 6, 3), 64, np.uint8)
+        a = V.surf_np(V.to_surface(img), 6, 4)
+        b = V.surf_np(V.to_surface(img.astype(np.float32) / 255), 6, 4)
+        self.assertLess(abs(a.mean() - 64 / 255), 0.01)
+        self.assertLess(np.abs(a - b).max(), 1e-6)
+        V._KEEP.clear()
+
+    def test_equal_earth_and_lattice_dots(self):
+        import vk_core as V
+        x, y = V.equal_earth([180, 0, 0], [0, 90, 0])
+        self.assertAlmostEqual(float(x[0]), 2.7064, places=3)
+        self.assertAlmostEqual(float(y[1]), 1.3173, places=3)
+        self.assertAlmostEqual(float(x[2]), 0.0, places=9)
+        # dot spacing on screen stays within px range across a 10x zoom, and the lattice is pinned to the world
+        for k in (300.0, 900.0, 3000.0):
+            d = V.lattice_dots(400, 50, 0.123, 0.0, k, 0.02)
+            row = d[25]
+            pk = np.where((row[1:-1] > row[:-2]) & (row[1:-1] >= row[2:]) & (row[1:-1] > 0.3))[0]
+            gaps = np.diff(pk)
+            self.assertGreaterEqual(gaps.min(), 2.5)
+            self.assertLessEqual(np.median(gaps), 12.5)
+        a = V.lattice_dots(200, 20, 0.0, 0.0, 500.0, 0.02)
+        b = V.lattice_dots(200, 20, 0.004, 0.0, 500.0, 0.02)       # camera moved 2 px right -> dots move 2 px left
+        self.assertLess(np.abs(a[:, 2:] - b[:, :-2]).max(), 1e-4)
+
+    def test_worley_tiles_without_seam(self):
+        import vk_core as V
+        d, lab = V.worley(128, 192, 32, seed=2, labels=True)
+        self.assertEqual(d.shape, (128, 192))
+        self.assertEqual(len(np.unique(lab)), 4 * 6)
+        # wrapping neighbours differ no more than ordinary neighbours do (no seam)
+        inner = np.abs(np.diff(d, axis=1)).max()
+        self.assertLessEqual(np.abs(d[:, 0] - d[:, -1]).max(), inner + 1e-6)
+        self.assertLessEqual(np.abs(d[0] - d[-1]).max(), np.abs(np.diff(d, axis=0)).max() + 1e-6)
+
+    def test_soft_sparkle_and_fade_io(self):
+        import vk_audio as A
+        x = A.sparkle(1.5, 20, lo=1200, hi=2600)
+        sp = np.abs(np.fft.rfft(x)) ** 2
+        fr = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertLess(sp[fr > 3200].sum() / sp.sum(), 0.01)
+        y = A.fade_io(np.ones((A.SR, 2)), 0.2, 0.3)
+        self.assertLess(abs(y[0, 0]), 1e-6)
+        self.assertLess(abs(y[-1, 1]), 1e-3)
+        self.assertAlmostEqual(y[A.SR // 2, 0], 1.0)
+
     def test_template_frame0_has_title(self):
         import scenes
         img = scenes.render_frame(0.0, 0)
@@ -121,6 +196,27 @@ class CoreTests(unittest.TestCase):
         v.add_math(cv, r"\Delta t' = \frac{\Delta t}{\sqrt{1 - v^2/c^2}}", 960, 540, 60)
         self.assertGreater(v.finish(cv, 0)[480:600, 760:1160].max(), 200)
         v._KEEP.clear()
+
+    def test_add_math_cached_and_zoned(self):
+        import vk_core as v, time
+        try:
+            v.math_img('x', 20)
+        except ImportError:
+            self.skipTest('no matplotlib')
+        cv = v.Canvas()
+        tex = r'\aleph_0 < 2^{\aleph_0}'
+        v.add_math(cv, tex, 200, 100, 64)
+        t0 = time.time()
+        for _ in range(20):
+            v.add_math(cv, tex, 200, 100, 64)
+        self.assertLess(time.time() - t0, 0.5)          # cached: no mathtext re-render per call
+        v._KEEP.clear()
+        v.add_math(cv, tex, 200, 100, 64)               # cache survives the per-frame _KEEP.clear()
+        img = v.finish(cv, 0)
+        self.assertGreater(img[60:140, 100:300].max(), 120)            # corner vignette dims it a little
+        hits = v.text_in_zones(cv, [(0, 0, 0.5, 0.25)])
+        self.assertTrue(hits and hits[0][0] == tex)
+        self.assertFalse(v.text_in_zones(cv, [(0.5, 0.5, 1, 1)]))
 
     def test_text_boxes_and_zones(self):
         import vk_core as v
@@ -234,6 +330,16 @@ class PipelineTests(unittest.TestCase):
         line = [l for l in buf.getvalue().splitlines() if l.startswith('HITS')][0]
         self.assertIn('4.0', line)
 
+    def test_bgm_key(self):
+        import vk_audio as A
+        import vk_bgm
+        # an A-minor triad pad with a little E and G: should read as A minor (or its relative C major at worst)
+        x = A.P(*[np.sin(2 * np.pi * A.mtof(m) * A.tt(6.0)) * w for m, w in
+                  ((57, 1.0), (60, 0.8), (64, 0.8), (69, 0.6), (55, 0.3), (62, 0.2))])
+        k, mode, r, notes = vk_bgm.key_of(x.astype(np.float32), A.SR)
+        self.assertEqual((vk_bgm.NAMES[k], mode), ('A', 'minor'))
+        self.assertEqual(notes[:5], [69, 72, 74, 76, 79])
+
     def test_render_scan_finalize(self):
         with tempfile.TemporaryDirectory() as d:
             for f in list(SCRIPTS.glob('*.py')) + list(TEMPLATES.glob('*.py')):
@@ -329,6 +435,141 @@ class SpectralTests(unittest.TestCase):
         self.assertGreater(gg, 0.9)
         self.assertLess(b, 0.05)
         self.assertTrue(np.allclose(V.srgb_to_linear(V.linear_to_srgb([0.2, 0.5, 0.9])), [0.2, 0.5, 0.9]))
+
+
+class WarpAndWhineTests(unittest.TestCase):
+    def test_warp_layer_puts_a_tilted_plane_and_its_glow_on_screen(self):
+        import vk_core as V
+        cv = V.Canvas()
+
+        def draw(c, g):
+            c.rectangle(0, 0, 400, 300)
+            c.set_source_rgb(0.8, 0.8, 0.8)
+            c.fill()
+            V.world_text(c, 'AQZ', 200, 150, 60, (0.1, 0.1, 0.1))
+            g.arc(200, 60, 30, 0, V.TAU)
+            g.set_source_rgb(1, 0.6, 0.2)
+            g.fill()
+
+        Hm = V.tilt_homography(400, 300, zoom=1.5, tilt=0.6)
+        V.warp_layer(cv, draw, 400, 300, Hm)
+        img = V.finish(cv, 0)
+        V._KEEP.clear()
+        top = np.nonzero(img[:, V.W // 2].max(1) > 150)[0]
+        self.assertTrue(len(top) > 100)
+        rows = [np.count_nonzero(img[y, :, 1] > 150) for y in (top[3], top[-4])]
+        self.assertLess(rows[0], rows[1])            # far (top) edge is narrower than the near edge
+
+    def test_warp_point_matches_a_scaled_layer(self):
+        import vk_core as V
+        cv = V.Canvas()
+
+        def draw(c, g):
+            c.arc(300, 200, 12, 0, V.TAU)
+            c.set_source_rgb(1, 1, 1)
+            c.fill()
+
+        sc = 0.5
+        Hm = V.tilt_homography(400, 300, zoom=1.5, tilt=0.6, scale=sc)
+        V.warp_layer(cv, draw, 400, 300, Hm, scale=sc)
+        x, y = V.warp_point(Hm, 300, 200, sc)
+        img = V.finish(cv, 0)
+        V._KEEP.clear()
+        ys, xs = np.nonzero(img[..., 1] > 120)
+        self.assertTrue(len(xs) > 10)
+        self.assertLess(abs(xs.mean() - x), 4)
+        self.assertLess(abs(ys.mean() - y), 4)
+
+    def test_whine_flags_a_sustained_high_tone_not_clicks(self):
+        if not has_ffmpeg():
+            self.skipTest('ffmpeg missing')
+        import vk_audio as A, vk_scan
+        from scipy.io import wavfile
+        d = tempfile.mkdtemp()
+        t = np.arange(8 * A.SR) / A.SR
+        x = 0.02 * np.random.default_rng(0).standard_normal(len(t))
+        x[2 * A.SR:7 * A.SR] += 0.2 * np.sin(2 * np.pi * 3500 * t[2 * A.SR:7 * A.SR])
+        wavfile.write(os.path.join(d, 'w.wav'), A.SR, (x * 32767).astype(np.int16))
+        clicks = np.zeros(8 * A.SR)
+        for k in range(40):
+            c = A.tick()
+            clicks[k * 9000:k * 9000 + len(c)] += c
+        wavfile.write(os.path.join(d, 'c.wav'), A.SR, (clicks * 0.5 * 32767).astype(np.int16))
+        with contextlib.redirect_stdout(io.StringIO()):
+            r1 = vk_scan.whine(os.path.join(d, 'w.wav'))
+            r2 = vk_scan.whine(os.path.join(d, 'c.wav'))
+        self.assertEqual(len(r1), 1)
+        self.assertAlmostEqual(np.mean([f for _, f in r1[0]]), 3500, delta=60)
+        self.assertEqual(r2, [])
+
+
+class SphereFitTests(unittest.TestCase):
+    def test_fit_rotation_recovers_known_rotation(self):
+        import vk_core as C
+        src = [(-35, -6), (-40, -15), (-48, -28), (-50, 0), (-60, -35)]
+        ax = C._unit3(-30.0, 45.0)
+        K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+        th = math.radians(57)
+        M0 = np.eye(3) + math.sin(th) * K + (1 - math.cos(th)) * (K @ K)
+        dst = list(zip(*C.rotate_lonlat(M0, *np.array(src, float).T)))
+        M = C.fit_rotation(src, dst)
+        self.assertTrue(np.allclose(M, M0, atol=1e-9))
+        h = C.rot_power(M, 0.5)
+        self.assertTrue(np.allclose(h @ h, M, atol=1e-9))
+        self.assertTrue(np.allclose(C.rot_power(M, 0.0), np.eye(3)))
+
+    def test_sample_points_beyond_remap_limit(self):
+        import vk_core as C
+        img = np.arange(64 * 128, dtype=np.float32).reshape(64, 128)
+        n = 70000
+        rng = np.random.default_rng(0)
+        xs, ys = rng.integers(0, 128, n).astype(np.float32), rng.integers(0, 64, n).astype(np.float32)
+        out = C.sample_points(img, xs, ys, cv2.INTER_NEAREST)
+        self.assertEqual(out.shape, (n,))
+        self.assertTrue(np.array_equal(out, img[ys.astype(int), xs.astype(int)]))
+
+    def test_smoothstep_arrays(self):
+        import vk_core as C
+        x = np.linspace(-1, 2, 7)
+        y = C.ss(0, 1, x)
+        self.assertEqual(y.shape, x.shape)
+        self.assertAlmostEqual(float(y[0]), 0.0)
+        self.assertAlmostEqual(float(y[-1]), 1.0)
+        self.assertAlmostEqual(C.ss(0, 1, 0.5), 0.5)
+
+
+class LateTextAndHeartbeatTests(unittest.TestCase):
+    def test_late_text_skips_finish_and_survives_blur(self):
+        import vk_core as V
+        cv = V.Canvas()
+        V.add_text(cv, 'SHARP', V.W / 2, V.H / 2, 90, anim=None, late=True, shadow=0)
+        img = V.finish(cv, 0)
+        self.assertEqual(len(cv.late_texts), 1)
+        self.assertLess(img[V.H // 2 - 40:V.H // 2 + 40, V.W // 2 - 150:V.W // 2 + 150].max(), 60)
+        blurred = cv2.GaussianBlur(img, (0, 0), 8)
+        out, boxes = V.draw_texts(blurred, cv.late_texts)
+        self.assertEqual(len(boxes), 1)
+        self.assertGreater(out[V.H // 2 - 40:V.H // 2 + 40, V.W // 2 - 150:V.W // 2 + 150].max(), 200)
+
+    def test_heartbeat_audible_above_150hz(self):
+        import vk_audio as A
+        x = A.heartbeat(3, 0.8)
+        self.assertTrue(np.isfinite(x).all())
+        X = np.abs(np.fft.rfft(x)) ** 2
+        f = np.fft.rfftfreq(len(x), 1 / A.SR)
+        self.assertGreater(X[f > 150].sum() / X.sum(), 0.15)
+
+
+class FitViewTests(unittest.TestCase):
+    def test_box_lands_above_caption_band(self):
+        import vk_core as V
+        z, cx, cy = V.fit_view(-300, -100, 500, 700, pad=50, top=40, bottom=200)
+        sx = lambda x: V.W / 2 + (x - cx) * z
+        sy = lambda y: V.H / 2 + (y - cy) * z
+        self.assertGreaterEqual(sy(-100), 40 - 1e-6)
+        self.assertLessEqual(sy(700), V.H - 200 + 1e-6)
+        self.assertAlmostEqual((sy(-100) + sy(700)) / 2, (40 + V.H - 200) / 2, places=4)
+        self.assertAlmostEqual((sx(-300) + sx(500)) / 2, V.W / 2, places=4)
 
 
 class GLTests(unittest.TestCase):

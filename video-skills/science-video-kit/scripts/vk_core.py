@@ -10,6 +10,8 @@
   text        add_text(cv, '[a]colored[/] markup', ...) queued and rasterised in finish(); CJK + latin font mixing;
               cv.text_boxes / text_in_zones() report where text ink landed (cover safe-zone checks)
   compose     group(cv, fn, a): draw a sub-scene on both layers and fade it as one piece
+  2.5D        tilt_homography + warp_layer(cv, draw, lw, lh, Hm): a flat scene laid on a tilted table (both layers)
+  world text  world_text(ctx, ...): cairo toy-font latin labels that follow camera transforms and warps
   post        finish(cv, idx) -> uint8 HxWx3: bloom, text, flash, soft shoulder (cv.shoulder), chromatic aberration, vignette, grain
 
 Style lives in YOUR project: set_fonts(), set_tags(), palette constants, backgrounds, characters.
@@ -31,11 +33,17 @@ HILITE = (1.0, 0.85, 0.45)
 
 
 def clamp01(x):
+    """works on scalars and numpy arrays"""
+    if isinstance(x, np.ndarray):
+        return np.clip(x, 0.0, 1.0)
     return min(1.0, max(0.0, x))
 
 
 def ss(a, b, x):
-    t = clamp01((x - a) / (b - a)) if b != a else float(x >= a)
+    """smoothstep from a to b; x may be a scalar or a numpy array"""
+    if b == a:
+        return (np.asarray(x) >= a).astype(np.float64) if isinstance(x, np.ndarray) else float(x >= a)
+    t = clamp01((x - a) / (b - a))
     return t * t * (3 - 2 * t)
 
 
@@ -71,6 +79,15 @@ def win(t, t0, t1, fin=0.35, fout=0.35):
     if t < t0 or t > t1:
         return 0.0
     return min(clamp01((t - t0) / fin) if fin > 0 else 1, clamp01((t1 - t) / fout) if fout > 0 else 1)
+
+
+def fit_view(x0, y0, x1, y1, pad=70, top=40, bottom=150, zmax=4.0):
+    """(zoom, cx, cy) for Canvas.set_cam that frames the world box (x0, y0)-(x1, y1) inside the screen area left
+    free by a bottom caption band (`bottom` px) and a top margin, centred in that area (not in the full frame).
+    Interpolate zoom in log space when moving between two framings."""
+    aw, ah = W - 2 * pad, H - top - bottom
+    z = min(aw / max(x1 - x0, 1e-6), ah / max(y1 - y0, 1e-6), zmax)
+    return z, (x0 + x1) / 2, (y0 + y1) / 2 + ((bottom - top) / 2) / z
 
 
 def hrand(*a):
@@ -111,6 +128,7 @@ class Canvas:
         self.shoulder = 1.2       # highlight roll-off above 0.85: output tops out near 1/shoulder (1.2 -> ~0.83 grey);
         #                           lower it (e.g. 0.15) when a big area must read as true white (blazing sky, flash)
         self.text_boxes = []      # [(text dict, ink box (x0, y0, x1, y1) px)] filled by finish()
+        self.math_boxes = []      # [(tex, ink box px)] filled by add_math (drawn immediately)
 
     def both(self):
         return (self.c, self.g)
@@ -133,9 +151,16 @@ _KEEP = []          # per-frame temporaries: clear with _KEEP.clear() at the end
 _PERSIST = []       # long-lived cached textures (persist=True): never cleared
 
 
+def _unit(img):
+    """uint8 images are 0..255: scale them to 0..1 (multiplying a uint8 array by 255 saturates it to white)"""
+    return img.astype(np.float32) / 255.0 if img.dtype == np.uint8 else img
+
+
 def to_surface(img, persist=False):
-    """float rgb (h,w,3) 0..1 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP (per-frame, clear it
-    after finish) or, with persist=True, in _PERSIST (for textures cached at import time and reused every frame)."""
+    """rgb (h,w,3) float 0..1 or uint8 0..255 -> cairo RGB24 surface. The numpy buffer is kept alive in _KEEP
+    (per-frame, clear it after finish) or, with persist=True, in _PERSIST (for textures cached at import time and
+    reused every frame)."""
+    img = _unit(img)
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     a[..., 0] = np.clip(img[..., 2] * 255, 0, 255)
@@ -148,6 +173,7 @@ def to_surface(img, persist=False):
 
 
 def to_surface_rgba(img, alpha, persist=False):
+    img, alpha = _unit(img), _unit(np.asarray(alpha))
     h, w, _ = img.shape
     a = np.empty((h, w, 4), np.uint8)
     al = np.clip(alpha, 0, 1)
@@ -184,14 +210,61 @@ def splat_points(img, xs, ys, flux, col=(1.0, 1.0, 1.0), sigma=0.8):
     ok = (x0 >= 0) & (y0 >= 0) & (x0 < w - 1) & (y0 < h - 1)
     x0, y0, f = x0[ok], y0[ok], f[ok]
     fx, fy = (xs[ok] - x0).astype(np.float32), (ys[ok] - y0).astype(np.float32)
-    acc = np.zeros((h, w), np.float32)
-    np.add.at(acc, (y0, x0), f * (1 - fx) * (1 - fy))
-    np.add.at(acc, (y0, x0 + 1), f * fx * (1 - fy))
-    np.add.at(acc, (y0 + 1, x0), f * (1 - fx) * fy)
-    np.add.at(acc, (y0 + 1, x0 + 1), f * fx * fy)
+    # np.bincount on flat indices: same sums as np.add.at, roughly 10x faster for 1e5+ points
+    base = y0.astype(np.int64) * w + x0
+    acc = np.bincount(base, f * (1 - fx) * (1 - fy), h * w)
+    acc += np.bincount(base + 1, f * fx * (1 - fy), h * w)
+    acc += np.bincount(base + w, f * (1 - fx) * fy, h * w)
+    acc += np.bincount(base + w + 1, f * fx * fy, h * w)
+    acc = acc.reshape(h, w).astype(np.float32)
     if sigma > 0:
         acc = cv2.GaussianBlur(acc, (0, 0), sigma)
     img += acc[..., None] * np.asarray(col, np.float32)
+    return img
+
+
+_DISCS = {}
+
+
+def disc_kernel(r):
+    """normalised anti-aliased disc (lens bokeh) of radius r px, rim slightly brighter than the centre"""
+    r = max(1, int(round(r)))
+    if r in _DISCS:
+        return _DISCS[r]
+    y, x = np.mgrid[-r:r + 1, -r:r + 1]
+    d = np.sqrt(x * x + y * y)
+    k = np.clip(r + 0.5 - d, 0, 1).astype(np.float32)
+    k *= 0.85 + 0.15 * np.clip(d / r, 0, 1) ** 4
+    _DISCS[r] = k / k.sum()
+    return _DISCS[r]
+
+
+def bokeh_points(img, xs, ys, coc, flux, cols, levels=(3, 8, 18, 40), sharp_sigma=0.9, gain=1.6, rmax=30):
+    """depth of field for thousands of point lights (3D star fields, neuron somas, dust) on a float HxWx3 image, in
+    place: points are sorted into blur buckets by their circle of confusion `coc` (px, e.g.
+    aperture * |1/focus - 1/depth| * focal_px) and each bucket is splatted once and convolved with a disc kernel, so
+    out-of-focus points become soft lens discs instead of Gaussian smudges. cols: (N, 3) or one rgb.
+    Energy is kept, so big discs get dim; `gain` lifts the blurred buckets a little (real bokeh reads brighter)."""
+    xs, ys, coc = np.asarray(xs, np.float64), np.asarray(ys, np.float64), np.asarray(coc, np.float64)
+    flux = np.broadcast_to(np.asarray(flux, np.float32), xs.shape)
+    cols = np.broadcast_to(np.asarray(cols, np.float32), xs.shape + (3,))
+    edges = (0,) + tuple(levels) + (1e18,)
+    for li in range(len(edges) - 1):
+        lo, hi = edges[li], edges[li + 1]
+        m = (coc >= lo) & (coc < hi)
+        if not m.any():
+            continue
+        lay = np.zeros(img.shape[:2] + (3,), np.float32)
+        for ch in range(3):
+            one = np.zeros(img.shape[:2] + (1,), np.float32)
+            splat_points(one, xs[m], ys[m], flux[m] * cols[m, ch], (1.0,), sigma=0)
+            lay[..., ch] = one[..., 0]
+        if li == 0:
+            lay = cv2.GaussianBlur(lay, (0, 0), sharp_sigma)
+        else:
+            r = max(1.5, min(lo + (min(hi, lo * 2.5) - lo) * 0.45, rmax))
+            lay = cv2.filter2D(lay, -1, disc_kernel(r)) * gain
+        img += lay
     return img
 
 
@@ -228,6 +301,70 @@ def pnoise(h, w, seed=0, octaves=5, base=4, persist=0.55):
         amp *= persist
     out -= out.min()
     return out / max(1e-6, out.max())
+
+
+def equal_earth(lon, lat):
+    """Equal Earth world projection (Savric et al. 2018): degrees -> projected units, x right / y up,
+    x in about +-2.7064 and y in +-1.3173. Equal-area and good-looking for world maps; scale with px = x * k."""
+    A1, A2, A3, A4 = 1.340264, -0.081106, 0.000893, 0.003796
+    lon = np.radians(np.asarray(lon, float))
+    th = np.arcsin(math.sqrt(3) / 2 * np.sin(np.radians(np.asarray(lat, float))))
+    t2 = th * th
+    t6 = t2 * t2 * t2
+    x = 2 * math.sqrt(3) * lon * np.cos(th) / (3 * (9 * A4 * t6 * t2 + 7 * A3 * t6 + 3 * A2 * t2 + A1))
+    return x, th * (A1 + A2 * t2 + t6 * (A3 + A4 * t2))
+
+
+def lattice_dots(w, h, x0, y0, k, spacing, px=(6.0, 12.0), sigma=1.25):
+    """(h, w) float32 halftone dots pinned to world coordinates: the screen shows world point (x0, y0) at its centre,
+    k = screen px per world unit, `spacing` = lattice step (world units) at the coarsest level. As the camera zooms,
+    the lattice halves and the finer level crossfades in, so dots stay px[0]..px[1] apart and a constant size on screen
+    (an "LED map" / dotted land that survives a 10x zoom). Gaussian dots are separable -> one np.outer per level;
+    multiply by a land mask for a dotted map."""
+    sp = spacing * k
+    lv = math.log2(max(sp, 1e-9) / px[0]) / math.log2(px[1] / px[0])
+    n = math.floor(lv)
+    fr = lv - n
+    d0 = spacing / (px[1] / px[0]) ** n
+
+    def prof(m, c0, d):
+        u = (np.arange(m) - m / 2) / k + c0
+        f = (u / d) % 1.0
+        dist = np.minimum(f, 1 - f) * d * k
+        return np.exp(-dist * dist / (2 * sigma * sigma)).astype(np.float32)
+
+    out = np.zeros((h, w), np.float32)
+    for d, wgt in ((d0, 1 - fr), (d0 / (px[1] / px[0]), fr)):
+        if wgt > 0.01:
+            out += np.outer(prof(h, y0, d), prof(w, x0, d)) * wgt
+    return out
+
+
+def worley(h, w, spacing, seed=0, jitter=0.9, tile=True, labels=False):
+    """cellular (Worley) noise: distance to the nearest of ~(h/spacing)*(w/spacing) jittered seeds, divided by
+    `spacing` (0 at a seed, ~0.5-0.7 on cell borders). 1 - d gives bright cells with dark lanes (solar granulation,
+    plant cells, foam, scales); edges of `labels` give cell walls. tile=True puts the seeds on a torus so the texture
+    repeats seamlessly (EXTEND_REPEAT, cv2.BORDER_WRAP, scrolling ground planes) - a plain distance transform leaves a
+    hard seam where the texture wraps. labels=True also returns the per-pixel id of the nearest seed."""
+    rng = np.random.default_rng(seed)
+    ny, nx = max(1, int(round(h / spacing))), max(1, int(round(w / spacing)))
+    m = np.full((h, w), 255, np.uint8)
+    for i in range(ny):
+        for j in range(nx):
+            y = int((i + 0.5 + rng.uniform(-jitter, jitter) / 2) * h / ny) % h
+            x = int((j + 0.5 + rng.uniform(-jitter, jitter) / 2) * w / nx) % w
+            m[y, x] = 0
+    src = np.tile(m, (3, 3)) if tile else m
+    d, lab = cv2.distanceTransformWithLabels(src, cv2.DIST_L2, 5, labelType=cv2.DIST_LABEL_PIXEL)
+    # every seed pixel has its own label; map labels to one id per seed (the 9 tiled copies share it)
+    ys, xs = np.nonzero(src == 0)
+    ids = np.zeros(int(lab.max()) + 1, np.int64)
+    ids[lab[ys, xs]] = (ys % h) * w + (xs % w)
+    lab = ids[lab]
+    if tile:
+        d, lab = d[h:2 * h, w:2 * w], lab[h:2 * h, w:2 * w]
+    d = (d / spacing).astype(np.float32)
+    return (d, lab) if labels else d
 
 
 # ---------------------------------------------------------------- 3D pinhole camera (cairo / numpy scenes)
@@ -302,6 +439,59 @@ def sample_equirect(tex, lon, lat):
     mx = ((np.asarray(lon) + 180) / 360 * tw - 0.5).astype(np.float32)
     my = ((90 - np.asarray(lat)) / 180 * th - 0.5).astype(np.float32)
     return cv2.remap(tex, mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_WRAP)
+
+
+def sample_points(img, mx, my, interp=cv2.INTER_LINEAR, border=cv2.BORDER_WRAP):
+    """cv2.remap for an arbitrary number of sample points (1-D pixel coords mx, my of any length). cv2.remap needs
+    both map dimensions < 32767, so a (N, 1) map with N > 32767 fails; the points are folded into rows of 2048.
+    Typical use: sample only the pixels of a disc / a selection (globe pixels, per-plate caps) from a big texture."""
+    mx = np.asarray(mx, np.float32).ravel()
+    my = np.asarray(my, np.float32).ravel()
+    n = mx.size
+    if n == 0:
+        return np.zeros((0,) + img.shape[2:], img.dtype)
+    cw = 2048
+    rows = (n + cw - 1) // cw
+    pad = rows * cw - n
+    MX = np.concatenate([mx, np.zeros(pad, np.float32)]).reshape(rows, cw)
+    MY = np.concatenate([my, np.zeros(pad, np.float32)]).reshape(rows, cw)
+    out = cv2.remap(img, MX, MY, interp, borderMode=border)
+    return out.reshape((rows * cw,) + img.shape[2:])[:n]
+
+
+def _unit3(lon, lat):
+    lo, la = np.radians(np.asarray(lon, np.float64)), np.radians(np.asarray(lat, np.float64))
+    return np.stack([np.cos(la) * np.cos(lo), np.cos(la) * np.sin(lo), np.sin(la)], -1)
+
+
+def fit_rotation(src, dst):
+    """best rotation (3x3, least squares / Kabsch) taking lon/lat points src [(lon, lat), ...] onto dst - e.g. fit a
+    continent's coastline points onto where they sat in an old supercontinent, or rotate a region of a globe so
+    chosen landmarks land on chosen spots. Use rotate_lonlat(M, ..., k) to animate it."""
+    a, b = _unit3(*np.array(src, np.float64).T), _unit3(*np.array(dst, np.float64).T)
+    U, _, Vt = np.linalg.svd(a.T @ b)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    return Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+
+
+def rot_power(M, k):
+    """fraction k of rotation M (same axis, k * angle): k = 0 -> identity, 1 -> M. Linear in angle = constant speed
+    along great circles (slerp from the identity)."""
+    ang = math.acos(max(-1.0, min(1.0, (np.trace(M) - 1) / 2)))
+    if ang < 1e-9:
+        return np.eye(3)
+    ax = np.array([M[2, 1] - M[1, 2], M[0, 2] - M[2, 0], M[1, 0] - M[0, 1]]) / (2 * math.sin(ang))
+    K = np.array([[0, -ax[2], ax[1]], [ax[2], 0, -ax[0]], [-ax[1], ax[0], 0]])
+    th = ang * k
+    return np.eye(3) + math.sin(th) * K + (1 - math.cos(th)) * (K @ K)
+
+
+def rotate_lonlat(M, lon, lat, k=1.0):
+    """apply rotation M (or the fraction k of it) to lon/lat (deg). Returns lon, lat. For per-pixel drawing of a
+    rotated region use the inverse: sample the texture at rotate_lonlat(M.T, screen_lon, screen_lat)."""
+    R = M if k == 1.0 else rot_power(M, k)
+    v = _unit3(lon, lat) @ R.T
+    return np.degrees(np.arctan2(v[..., 1], v[..., 0])), np.degrees(np.arcsin(np.clip(v[..., 2], -1, 1)))
 
 
 # ---------------------------------------------------------------- generic effects
@@ -653,17 +843,29 @@ def math_img(tex, size, color=(1.0, 1.0, 1.0), fontset='stix'):
     return rgb, a
 
 
+_MATH_CACHE = {}     # (tex, size, colour, fontset) -> (surface, glow surface, w, h, ink box); kept for the process
+
+
 def add_math(cv, tex, x, y, size=48, color=None, alpha=1.0, anchor='m', glow=0.0, fontset='stix'):
     """paint a formula with real sub/superscripts, fractions and roots onto the base layer, centred at (x, y)
-    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order."""
+    (anchor 'l'/'r' align left/right edge). Drawn immediately (not in finish), so call it in draw order.
+    The rendered formula is cached per (tex, size, colour, fontset): mathtext costs ~50-150 ms, so per-frame calls
+    would dominate a render. The ink box goes to cv.math_boxes so text_in_zones() sees formulas too."""
     if alpha <= 0.004:
         return
-    rgb, a = math_img(tex, int(size), tuple(color or CREAM), fontset)
-    h, w = a.shape
+    key = (tex, int(size), tuple(round(float(c), 4) for c in (color or CREAM)), fontset)
+    if key not in _MATH_CACHE:
+        rgb, a = math_img(tex, int(size), key[2], fontset)
+        ys, xs = np.nonzero(a > 0.25)
+        ink = (xs.min(), ys.min(), xs.max() + 1, ys.max() + 1) if len(xs) else (0, 0, 0, 0)
+        _MATH_CACHE[key] = (to_surface_rgba(rgb, a, persist=True), to_surface_rgba(rgb * 0.6, a, persist=True),
+                            a.shape[1], a.shape[0], ink)
+    s1, s2, w, h, ink = _MATH_CACHE[key]
     x0 = x - (w / 2 if anchor == 'm' else (w if anchor == 'r' else 0))
-    paint_img(cv.c, to_surface_rgba(rgb, a), x0, y - h / 2, alpha=alpha)
+    paint_img(cv.c, s1, x0, y - h / 2, alpha=alpha)
     if glow > 0:
-        paint_img(cv.g, to_surface_rgba(rgb * glow, a), x0, y - h / 2, alpha=alpha)
+        paint_img(cv.g, s2, x0, y - h / 2, alpha=min(1.0, alpha * glow / 0.6))
+    cv.math_boxes.append((tex, (x0 + ink[0], y - h / 2 + ink[1], x0 + ink[2], y - h / 2 + ink[3])))
 
 
 def missing_glyphs(markup, weight=800, sans=False, font=None):
@@ -717,16 +919,18 @@ def text_width(markup, size, weight=800, tracking=0.02, sans=False, font=None):
 
 
 def add_text(cv, markup, x, y, size=56, color=None, alpha=1.0, t=1e9, anim='rise', anchor='m', weight=800,
-             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0, font=None):
+             tracking=0.02, stagger=0.03, dur=0.5, shadow=0.85, glow=0.0, sans=False, scale=1.0, font=None, late=False):
     """queue text (drawn in post). t = time since appearance. anim: 'rise' (per-char), 'type', None.
     scale != 1 gives a 'stamp' slam-in when animated from ~1.35 -> 1.
-    font = path to one font used for every glyph of this string (handwriting, kai, mono ...)."""
+    font = path to one font used for every glyph of this string (handwriting, kai, mono ...).
+    late=True: finish() leaves this text out (kept in cv.late_texts) so it can be drawn with draw_texts() AFTER a
+    full-frame effect (blur, eyelids, squash ...) and stay sharp on top of it."""
     color = color or CREAM
     if alpha <= 0.004 or t < 0:
         return
     cv.texts.append(dict(markup=markup, x=x, y=y, size=size, color=color, alpha=alpha, t=t, anim=anim,
                          anchor=anchor, weight=weight, tracking=tracking, stagger=stagger, dur=dur,
-                         shadow=shadow, glow=glow, sans=sans, scale=scale, font=font))
+                         shadow=shadow, glow=glow, sans=sans, scale=scale, font=font, late=late))
 
 
 def _render_text(img, d):
@@ -801,16 +1005,26 @@ def _render_text(img, d):
     return None
 
 
+def draw_texts(img, texts):
+    """composite queued text dicts (e.g. cv.late_texts) onto a finished uint8 RGB frame; returns (frame, ink boxes).
+    Use after a whole-frame effect in Section.post so captions are not blurred / darkened with the picture."""
+    f = img.astype(np.float32) / 255.0
+    boxes = [(d, _render_text(f, d)) for d in texts]
+    return (np.clip(f, 0, 1) * 255 + 0.5).astype(np.uint8), [(d, b) for d, b in boxes if b]
+
+
 def text_in_zones(cv, zones):
     """Call after finish(cv). zones = [(x0, y0, x1, y1)] as fractions of the frame (e.g. a cover's top-left corner
     (0, 0, 0.5, 0.25) that a platform badge will cover). Returns [(markup, box_px, zone)] for every text whose ink
-    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted)."""
+    overlaps a zone - empty list means the zones are free of text (glow/shadow halos are not counted).
+    Formulas painted with add_math are checked too (their markup is the tex string)."""
     hits = []
-    for d, b in cv.text_boxes:
+    items = [(d['markup'], b) for d, b in cv.text_boxes] + list(getattr(cv, 'math_boxes', []))
+    for m, b in items:
         for z in zones:
             zx0, zy0, zx1, zy1 = z[0] * W, z[1] * H, z[2] * W, z[3] * H
             if b[0] < zx1 and b[2] > zx0 and b[1] < zy1 and b[3] > zy0:
-                hits.append((d['markup'], b, z))
+                hits.append((m, b, z))
     return hits
 
 
@@ -833,6 +1047,88 @@ def group(cv, fn, a):
     cv.c.paint_with_alpha(a)
     for d in cv.texts[n0:]:
         d['alpha'] *= a
+
+
+def world_text(ctx, s, x, y, size, col, alpha=1.0, face='Consolas', bold=True, anchor='m', italic=False):
+    """draw latin text straight onto a cairo context (cairo toy font by family name, e.g. 'Consolas', 'Georgia').
+    Unlike add_text it follows set_cam / ctx transforms and perspective-warped layers, and is cheap enough for
+    hundreds of labels per frame (dials, tables, ciphertext). y = vertical centre of capitals. No CJK shaping:
+    keep Chinese in add_text. Ends with new_path() so the next arc() is not joined to the text."""
+    if alpha <= 0.003:
+        return
+    ctx.select_font_face(face, cairo.FONT_SLANT_ITALIC if italic else cairo.FONT_SLANT_NORMAL,
+                         cairo.FONT_WEIGHT_BOLD if bold else cairo.FONT_WEIGHT_NORMAL)
+    ctx.set_font_size(size)
+    adv = ctx.text_extents(s).x_advance
+    x0 = x - adv / 2 if anchor == 'm' else (x - adv if anchor == 'r' else x)
+    ctx.move_to(x0, y + size * 0.36)
+    ctx.set_source_rgba(*col, alpha)
+    ctx.show_text(s)
+    ctx.new_path()
+
+
+def tilt_homography(lw, lh, zoom=1.0, tilt=0.5, cx=None, cy=None, roll=0.0, sx=None, sy=None, scale=1.0, D=2200.0):
+    """3x3 homography that lays a flat layer (lw x lh layer px, drawn at `scale` px per unit) on a table tilted back
+    by `tilt` radians (far edge = top), seen by a pinhole camera: layer point (cx, cy) (units) lands on screen (sx, sy),
+    zoom ~ screen px per unit at that point, roll rotates the shot. Use with warp_layer."""
+    cx = lw / 2 if cx is None else cx
+    cy = lh / 2 if cy is None else cy
+    sx = W / 2 if sx is None else sx
+    sy = H / 2 if sy is None else sy
+    f = D * zoom
+    ca, sa, cr, sr = math.cos(tilt), math.sin(tilt), math.cos(roll), math.sin(roll)
+
+    def proj(u, v):
+        X, Y = u - cx, v - cy
+        z = D - Y * sa
+        px, py = f * X / z, f * Y * ca / z
+        return sx + px * cr - py * sr, sy + px * sr + py * cr
+
+    src = np.float32([[0, 0], [lw * scale, 0], [lw * scale, lh * scale], [0, lh * scale]])
+    dst = np.float32([proj(0, 0), proj(lw, 0), proj(lw, lh), proj(0, lh)])
+    return cv2.getPerspectiveTransform(src, dst)
+
+
+def _paint_warped(ctx, arr, Hm, ow, oh, alpha):
+    out = np.ascontiguousarray(cv2.warpPerspective(arr, Hm, (ow, oh), flags=cv2.INTER_LINEAR))
+    _KEEP.append(out)
+    s = cairo.ImageSurface.create_for_data(memoryview(out), cairo.FORMAT_ARGB32, ow, oh)
+    ctx.save()
+    ctx.identity_matrix()
+    ctx.set_source_surface(s, 0, 0)
+    ctx.paint_with_alpha(alpha)
+    ctx.restore()
+
+
+def warp_point(Hm, x, y, scale=1.0):
+    """screen px of a layer point (x, y) in layer units - for add_text labels, glows or hit markers that must sit on a
+    warped layer. Pass the same `scale` that went to tilt_homography / warp_layer."""
+    p = np.asarray(Hm, np.float64) @ np.array([x * scale, y * scale, 1.0])
+    return float(p[0] / p[2]), float(p[1] / p[2])
+
+
+def warp_layer(cv, draw, lw, lh, Hm, alpha=1.0, scale=1.0):
+    """perspective 2.5D: draw(c, g) paints a flat scene (a machine, a board, a map) in layer units 0..lw x 0..lh on a
+    transparent base context c and a half-res additive glow context g; both are warped by Hm (tilt_homography) onto
+    cv.c and cv.g, so lamps on the tilted object still bloom. scale = layer px per unit (raise it for close-ups so
+    the texture is not magnified; ~0.05 s per 2000 px layer). Clear _KEEP per frame as usual.
+    Hm must come from tilt_homography(..., scale=<the same scale>) - with a mismatch the layer lands shrunk in a corner."""
+    w, h = int(lw * scale), int(lh * scale)
+    sb = cairo.ImageSurface(cairo.FORMAT_ARGB32, w, h)
+    sg = cairo.ImageSurface(cairo.FORMAT_ARGB32, w // 2, h // 2)
+    c, g = cairo.Context(sb), cairo.Context(sg)
+    c.scale(scale, scale)
+    g.scale(scale / 2, scale / 2)
+    for x in (c, g):
+        x.set_line_cap(cairo.LINE_CAP_ROUND)
+        x.set_line_join(cairo.LINE_JOIN_ROUND)
+    g.set_operator(cairo.OPERATOR_ADD)
+    draw(c, g)
+    for s_ in (sb, sg):
+        s_.flush()
+    _paint_warped(cv.c, np.ndarray((h, w, 4), np.uint8, sb.get_data()), Hm, W, H, alpha)
+    H2 = np.diag([0.5, 0.5, 1.0]) @ Hm @ np.diag([2.0, 2.0, 1.0])
+    _paint_warped(cv.g, np.ndarray((h // 2, w // 2, 4), np.uint8, sg.get_data()), H2, W // 2, H // 2, alpha)
 
 
 # ---------------------------------------------------------------- post
@@ -861,7 +1157,10 @@ def finish(cv, frame_idx=0):
         b = b + b2 * 0.7
         img += cv2.resize(b, (W, H), interpolation=cv2.INTER_LINEAR)
     cv.text_boxes = []
+    cv.late_texts = [d for d in cv.texts if d.get('late')]
     for d in cv.texts:
+        if d.get('late'):
+            continue
         b = _render_text(img, d)
         if b:
             cv.text_boxes.append((d, b))

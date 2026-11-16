@@ -47,6 +47,7 @@ class Section:
 
     def post(self, img, t):
         return img                     # per-section full-frame effect on the finished uint8 frame (scanlines, squash...)
+        #                                texts queued with add_text(..., late=True) are drawn after this, unaffected
 
 
 class Hook(Section):
@@ -88,7 +89,10 @@ def all_cues():
 def _one(sec, tl, idx):
     cv = Canvas()
     sec.draw(cv, tl)
-    return sec.post(finish(cv, idx), tl)
+    img = sec.post(finish(cv, idx), tl)
+    if cv.late_texts:                   # add_text(..., late=True): drawn over the post effect, stays sharp
+        img = draw_texts(img, cv.late_texts)[0]
+    return img
 
 
 def render_frame(t, idx=0):

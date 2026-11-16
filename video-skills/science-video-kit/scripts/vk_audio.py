@@ -64,6 +64,18 @@ def filt(x, kind, f, order=2):
     return sosfilt(butter(order, f, kind, fs=SR, output='sos'), x)
 
 
+def fade_io(x, a=0.3, r=0.6):
+    """sine-squared fade in over a s and cosine-squared fade out over r s (mono or stereo). Beds, drones and noise
+    layers cut hard at their ends click or thump; fade both ends."""
+    n = len(x)
+    e = np.ones(n)
+    na, nr = min(n, int(a * SR)), min(n, int(r * SR))
+    e[:na] = np.sin(np.linspace(0, np.pi / 2, na)) ** 2
+    if nr:
+        e[n - nr:] *= np.cos(np.linspace(0, np.pi / 2, nr)) ** 2
+    return x * (e[:, None] if np.ndim(x) == 2 else e)
+
+
 def P(*xs):
     """sum arrays of different lengths (avoids the classic broadcast error)"""
     out = np.zeros(max(len(x) for x in xs))
@@ -318,13 +330,20 @@ def cloth():
     return norm(filt(noise(0.5), 'band', [500, 3000]) * np.sin(np.pi * tt(0.5) / 0.5) ** 2, 0.3)
 
 
-def heartbeat(n=3, period=0.9):
-    beat = sweep(70, 45, 0.18) * env(0.18, 0.004, 22)
+def heartbeat(n=3, period=0.9, f=95.0):
+    """lub-dub heartbeat. The body sits at f (~95 Hz) with 2nd/3rd harmonics and a short lowpassed click, so it is
+    heard on phone / laptop speakers (the old 70 -> 45 Hz sine was inaudible there). period may shrink for a
+    quickening pulse: build several calls or loop yourself."""
+    d = 0.28
+    t = tt(d)
+    ph = 2 * np.pi * np.cumsum(f * (1 + 0.6 * np.exp(-t * 30))) / SR
+    beat = (np.sin(ph) + 0.45 * np.sin(2 * ph) + 0.25 * np.sin(3 * ph)) * env(d, 0.003, 11)
+    beat = P(beat, filt(noise(d), 'low', 500) * env(d, 0.001, 40) * 0.4)
     out = np.zeros(int((n * period + 1) * SR))
     for k in range(n):
-        for dl, g in ((0, 1.0), (0.22, 0.7)):
+        for dl, g in ((0, 1.0), (0.22, 0.65)):
             i = int((k * period + dl) * SR)
-            out[i:i + len(beat)] += beat * g
+            out[i:i + len(beat)] += beat[:len(out) - i] * g
     return norm(out, 0.9)
 
 
@@ -365,10 +384,11 @@ def flow_bed(d=30.0):
     return norm(filt(noise(d), 'band', [300, 2500]) * (0.3 + 0.3 * mod) * e, 0.18)
 
 
-def sparkle(d=1.2, n=18):
+def sparkle(d=1.2, n=18, lo=3000.0, hi=7000.0):
+    """n short sine glints at random times; lower lo/hi (e.g. 1200-2600) for a softer, less piercing shimmer"""
     out = np.zeros(int(d * SR))
     for k in range(n):
-        f = rng.uniform(3000, 7000)
+        f = rng.uniform(lo, hi)
         b = np.sin(2 * np.pi * f * tt(0.15)) * env(0.15, 0.001, 30)
         i = int(rng.uniform(0, d - 0.15) * SR)
         out[i:i + len(b)] += b * rng.uniform(0.3, 1)
