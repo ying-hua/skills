@@ -31,6 +31,17 @@ class CoreTests(unittest.TestCase):
             np.add.at(ref, (y0 + dy, x0 + dx), ff * wgt)
         self.assertLess(np.abs(img[..., 0] - ref).max(), 1e-3)
 
+    def test_bokeh_points_discs_and_energy(self):
+        import vk_core as V
+        img = np.zeros((120, 200, 3), np.float32)
+        V.bokeh_points(img, [50.0, 150.0], [60.0, 60.0], [0.5, 30.0], 10.0, (1.0, 0.5, 0.25), gain=1.0)
+        # sharp point stays compact, defocused point spreads into a wide flat disc
+        sharp, blur = img[:, :100, 0], img[:, 100:, 0]
+        self.assertGreater(sharp.max(), 10 * blur.max())
+        self.assertGreater((blur > blur.max() * 0.5).sum(), 300)
+        self.assertAlmostEqual(float(blur.sum()), 10.0, delta=0.3)          # energy kept
+        self.assertAlmostEqual(float(img[..., 1].sum() / img[..., 0].sum()), 0.5, places=3)
+
     def test_to_surface_accepts_uint8(self):
         import vk_core as V
         img = np.full((4, 6, 3), 64, np.uint8)

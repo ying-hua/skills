@@ -223,6 +223,51 @@ def splat_points(img, xs, ys, flux, col=(1.0, 1.0, 1.0), sigma=0.8):
     return img
 
 
+_DISCS = {}
+
+
+def disc_kernel(r):
+    """normalised anti-aliased disc (lens bokeh) of radius r px, rim slightly brighter than the centre"""
+    r = max(1, int(round(r)))
+    if r in _DISCS:
+        return _DISCS[r]
+    y, x = np.mgrid[-r:r + 1, -r:r + 1]
+    d = np.sqrt(x * x + y * y)
+    k = np.clip(r + 0.5 - d, 0, 1).astype(np.float32)
+    k *= 0.85 + 0.15 * np.clip(d / r, 0, 1) ** 4
+    _DISCS[r] = k / k.sum()
+    return _DISCS[r]
+
+
+def bokeh_points(img, xs, ys, coc, flux, cols, levels=(3, 8, 18, 40), sharp_sigma=0.9, gain=1.6, rmax=30):
+    """depth of field for thousands of point lights (3D star fields, neuron somas, dust) on a float HxWx3 image, in
+    place: points are sorted into blur buckets by their circle of confusion `coc` (px, e.g.
+    aperture * |1/focus - 1/depth| * focal_px) and each bucket is splatted once and convolved with a disc kernel, so
+    out-of-focus points become soft lens discs instead of Gaussian smudges. cols: (N, 3) or one rgb.
+    Energy is kept, so big discs get dim; `gain` lifts the blurred buckets a little (real bokeh reads brighter)."""
+    xs, ys, coc = np.asarray(xs, np.float64), np.asarray(ys, np.float64), np.asarray(coc, np.float64)
+    flux = np.broadcast_to(np.asarray(flux, np.float32), xs.shape)
+    cols = np.broadcast_to(np.asarray(cols, np.float32), xs.shape + (3,))
+    edges = (0,) + tuple(levels) + (1e18,)
+    for li in range(len(edges) - 1):
+        lo, hi = edges[li], edges[li + 1]
+        m = (coc >= lo) & (coc < hi)
+        if not m.any():
+            continue
+        lay = np.zeros(img.shape[:2] + (3,), np.float32)
+        for ch in range(3):
+            one = np.zeros(img.shape[:2] + (1,), np.float32)
+            splat_points(one, xs[m], ys[m], flux[m] * cols[m, ch], (1.0,), sigma=0)
+            lay[..., ch] = one[..., 0]
+        if li == 0:
+            lay = cv2.GaussianBlur(lay, (0, 0), sharp_sigma)
+        else:
+            r = max(1.5, min(lo + (min(hi, lo * 2.5) - lo) * 0.45, rmax))
+            lay = cv2.filter2D(lay, -1, disc_kernel(r)) * gain
+        img += lay
+    return img
+
+
 # ---------------------------------------------------------------- noise
 def fbm(h, w, seed=0, octaves=6, base=4, persist=0.55):
     rng = np.random.default_rng(seed)
